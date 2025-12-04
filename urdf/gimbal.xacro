@@ -33,6 +33,19 @@
     <xacro:inertial_box mass="1.0" x="0.2" y="0.2" z="0.05"/>
   </link>
 
+  <gazebo>
+    <plugin name="gazebo_ros2_control" filename="libgazebo_ros2_control.so">
+      <robot_param>robot_description</robot_param>
+      <robot_param_node>robot_state_publisher</robot_param_node>
+
+      <parameters>$(find gimbal_demo)/config/controller.yaml</parameters>
+
+      <robotNamespace>/gimbal</robotNamespace>
+      <controlPeriod>0.001</controlPeriod>
+      <robotSimType>gazebo_ros2_control/GazeboSystem</robotSimType>
+    </plugin>
+  </gazebo>
+
   <!-- yaw_link -->
   <link name="gimbal_yaw_link">
     <visual>
@@ -163,4 +176,24 @@
       </plugin>
     </sensor>
   </gazebo>
+
+
+
+  <ros2_control name="GimbalSystem" type="system">
+    <hardware>
+      <plugin>gazebo_ros2_control/GazeboSystem</plugin>
+    </hardware>
+
+    <joint name="yaw_joint">
+      <command_interface name="position"/>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+    </joint>
+
+    <joint name="pitch_joint">
+      <command_interface name="position"/>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+    </joint>
+  </ros2_control>
 </robot>
