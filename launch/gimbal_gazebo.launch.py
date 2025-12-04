@@ -4,12 +4,14 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import Command, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
+from launch.actions import TimerAction
 
 
 
 def generate_launch_description():
     pkg_share = FindPackageShare('gimbal_demo')
     xacro_path = PathJoinSubstitution([pkg_share, 'urdf', 'gimbal.xacro'])
+    rviz_config = PathJoinSubstitution([pkg_share, 'rviz', 'camera.rviz'])
 
     robot_description = Command(['xacro ', xacro_path])
 
@@ -21,19 +23,12 @@ def generate_launch_description():
         parameters=[{'robot_description': robot_description}],
     )
 
-    joint_state_publisher_gui_node = Node(
-        package= 'joint_state_publisher_gui',
-        executable= 'joint_state_publisher_gui',
-        name= 'joint_state_publisher_gui',
-        output= 'screen'
-    )
-
     rviz_node = Node(
         package= 'rviz2',
         executable= 'rviz2',
         name= 'rviz2',
         output= 'screen',
-        arguments=['-d', '']
+        arguments=['-d', rviz_config]
     )
 
     gazebo_launch = IncludeLaunchDescription(
@@ -50,10 +45,37 @@ def generate_launch_description():
         output= 'screen',
     )
 
+    joint_state_spawner = Node(
+        package='controller_manager',
+        executable='spawner',
+        arguments=['joint_state_broadcaster',
+                   '--controller-manager', '/controller_manager'],
+        output='screen',
+    )
+
+    gimbal_spawner = Node(
+        package='controller_manager',
+        executable='spawner',
+        arguments=['gimbal_controller',
+                   '--controller-manager', '/controller_manager'],
+        output='screen',
+    )
+
+    joint_state_spawner_delayed = TimerAction(
+    period=3.0,
+    actions=[joint_state_spawner]
+    )
+
+    gimbal_spawner_delayed = TimerAction(
+        period=4.0,
+        actions=[gimbal_spawner]
+    )
+
     return LaunchDescription([
         rviz_node,
-        joint_state_publisher_gui_node,
         gazebo_launch,
         robot_state_publisher,
         spawn_entity,
+        joint_state_spawner_delayed,
+        gimbal_spawner_delayed,
     ])
