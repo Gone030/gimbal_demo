@@ -9,7 +9,7 @@ from launch.actions import TimerAction
 def generate_launch_description():
     pkg_share = FindPackageShare('gimbal_mani')
     xacro_path = PathJoinSubstitution([pkg_share, 'urdf', 'gimbal.xacro'])
-    world_path = '/home/gone/ros2_ws/src/dummy_demo/gimbal_mani/urdf/gimbal.sdf'
+    world_path = PathJoinSubstitution([pkg_share, 'urdf', 'gimbal.sdf'])
 
     robot_description = Command(['xacro ', xacro_path])
 
@@ -77,8 +77,8 @@ def generate_launch_description():
 
     tracker_node = Node(
         package='gimbal_mani',
-        executable='tracker',
-        name='tracker',
+        executable='color_tracker',
+        name='color_tracker',
         output='screen',
     )
 
@@ -118,5 +118,5 @@ def generate_launch_description():
         tracker_node,
         target_viz_node,
         # gz_bridge,
-        rviz
+        # rviz
     ])
