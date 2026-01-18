@@ -1,122 +1,110 @@
+import os
+import re
+
+from ament_index_python.packages import get_package_share_directory
+
 from launch import LaunchDescription
-from launch.actions import IncludeLaunchDescription, SetEnvironmentVariable
+from launch.actions import IncludeLaunchDescription, RegisterEventHandler
+from launch.event_handlers import OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import Command, PathJoinSubstitution
+
 from launch_ros.actions import Node
-from launch_ros.substitutions import FindPackageShare
-from launch.actions import TimerAction
+import xacro
+
+
+def _sanitize_urdf_xml(xml: str) -> str:
+    xml = re.sub(r"<\?xml[^>]*\?>", "", xml).strip()
+    xml = re.sub(r"<!--.*?-->", "", xml, flags=re.DOTALL)
+    xml = " ".join(xml.split())
+    return xml
+
 
 def generate_launch_description():
-    pkg_share = FindPackageShare('gimbal_mani')
-    xacro_path = PathJoinSubstitution([pkg_share, 'urdf', 'gimbal.xacro'])
-    world_path = PathJoinSubstitution([pkg_share, 'urdf', 'gimbal.sdf'])
+    pkg_share = get_package_share_directory('gimbal_mani')
 
-    robot_description = Command(['xacro ', xacro_path])
+    xacro_path = os.path.join(pkg_share, 'urdf', 'gimbal.xacro')
+    world_path = os.path.join(pkg_share, 'urdf', 'gimbal.sdf')
 
-    env_libgl = SetEnvironmentVariable('LIBGL_ALWAYS_SOFTWARE', '1')
+    doc = xacro.process_file(xacro_path)
+    robot_desc = doc.toxml()
+    robot_desc = _sanitize_urdf_xml(robot_desc)
 
-    # 1. 로봇 모델 퍼블리셔
-    robot_state_publisher = Node(
+    # robot_state_publisher
+    node_robot_state_publisher = Node(
         package='robot_state_publisher',
         executable='robot_state_publisher',
         name='robot_state_publisher',
         output='screen',
-        parameters=[{'robot_description': robot_description,
-                     'use_sim_time': True
-                     }],
+        parameters=[{
+            'robot_description': robot_desc,
+            'use_sim_time': True
+        }],
     )
 
-    gazebo_launch = IncludeLaunchDescription(
+    # Gazebo 실행
+    gazebo = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
-            [FindPackageShare('gazebo_ros'), '/launch', '/gazebo.launch.py']
-            # [FindPackageShare('gazebo_ros'), '/launch', '/gzserver.launch.py'] # 헤드리스
+            os.path.join(
+                get_package_share_directory('gazebo_ros'),
+                'launch',
+                'gazebo.launch.py'
+            )
         ),
         launch_arguments={'world': world_path}.items(),
     )
 
+    # Gazebo Spawn Entity
     spawn_entity = Node(
         package='gazebo_ros',
         executable='spawn_entity.py',
-        arguments=['-topic', 'robot_description',
-                   '-entity', 'gimbal'],
+        arguments=[
+            '-topic', 'robot_description',
+            '-entity', 'gimbal'
+        ],
         output='screen',
     )
 
-    joint_state_spawner = Node(
+    # Controllers spawner
+    joint_state_broadcaster_spawner = Node(
         package='controller_manager',
         executable='spawner',
-        arguments=['joint_state_broadcaster',
-                   '--controller-manager', '/controller_manager'],
+        arguments=[
+            'joint_state_broadcaster',
+            '--controller-manager', '/controller_manager',
+            '--controller-manager-timeout', '60'
+        ],
         output='screen',
     )
 
-    gimbal_spawner = Node(
+    gimbal_controller_spawner = Node(
         package='controller_manager',
         executable='spawner',
-        arguments=['gimbal_controller',
-                   '--controller-manager', '/controller_manager'],
+        arguments=[
+            'gimbal_controller',
+            '--controller-manager', '/controller_manager',
+            '--controller-manager-timeout', '60'
+        ],
         output='screen',
     )
 
-    joint_state_spawner_delayed = TimerAction(
-        period=10.0,
-        actions=[joint_state_spawner]
+    start_joint_state_broadcaster = RegisterEventHandler(
+        OnProcessExit(
+            target_action=spawn_entity,
+            on_exit=[joint_state_broadcaster_spawner],
+        )
     )
 
-    gimbal_spawner_delayed = TimerAction(
-        period=14.0,
-        actions=[gimbal_spawner]
-    )
-
-    # teleop_node = Node(
-    #     package='gimbal_mani',
-    #     executable='teleop',
-    #     name='teleop',
-    #     output='screen',
-    # )
-
-    tracker_node = Node(
-        package='gimbal_mani',
-        executable='color_tracker',
-        name='color_tracker',
-        output='screen',
-    )
-
-    target_viz_node = Node(
-        package='gimbal_mani',
-        executable='target_viz',
-        name='target_viz',
-        output='screen',
-    )
-
-    # gz_bridge = Node(
-    #     package='ros_gz_bridge',
-    #     executable='parameter_bridge',
-    #     arguments=[
-    #         '/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock',
-    #         '/camera/image_raw@sensor_msgs/msg/Image[gz.msgs.Image',
-    #         '/camera/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo',
-    #     ],
-    #     output='screen'
-    # )
-
-    rviz = Node(
-        package='rviz2',
-        executable='rviz2',
-        arguments=['--ros-args', '-p', 'use_sim_time:=true'],
-        output='screen'
+    start_gimbal_controller = RegisterEventHandler(
+        OnProcessExit(
+            target_action=joint_state_broadcaster_spawner,
+            on_exit=[gimbal_controller_spawner],
+        )
     )
 
     return LaunchDescription([
-        env_libgl,
-        gazebo_launch,
-        robot_state_publisher,
+        gazebo,
+        node_robot_state_publisher,
         spawn_entity,
-        joint_state_spawner_delayed,
-        gimbal_spawner_delayed,
-        # teleop_node,
-        tracker_node,
-        target_viz_node,
-        # gz_bridge,
-        # rviz
+        start_joint_state_broadcaster,
+        start_gimbal_controller,
     ])
