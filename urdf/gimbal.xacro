@@ -17,9 +17,9 @@
   <!-- base_link -->
   <link name="base_link">
     <visual>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <origin xyz="0 0 0.025" rpy="0 0 0"/>
       <geometry>
-        <box size="0.2 0.2 0.05"/>
+        <box size="0.25 0.25 0.05"/>
       </geometry>
       <material name="grey">
         <color rgba="0.7 0.7 0.7 1.0"/>
@@ -27,17 +27,19 @@
     </visual>
     <collision>
       <geometry>
-        <box size="0.2 0.2 0.05"/>
+        <box size="0.25 0.25 0.05"/>
       </geometry>
     </collision>
-    <xacro:inertial_box mass="1.0" x="0.2" y="0.2" z="0.05"/>
+    <xacro:inertial_box mass="1.0" x="0.25" y="0.25" z="0.05"/>
   </link>
 
   <gazebo>
       <plugin filename="libgazebo_ros2_control.so" name="gazebo_ros2_control">
-          <parameters>$(find gimbal_mani)/config/controller.yaml</parameters>
+        <parameters>$(find gimbal_mani)/config/controller.yaml</parameters>
       </plugin>
   </gazebo>
+
+  <link name="gimbal_base_link"/>
 
   <!-- yaw_link -->
   <link name="gimbal_yaw_link">
@@ -117,7 +119,7 @@
     <visual>
       <origin xyz="0 0 0.05" rpy="0 0 0"/>
       <geometry>
-        <cylinder length="0.10" radius="0.02"/>
+        <cylinder length="0.25" radius="0.025"/>
       </geometry>
       <material name="grey">
         <color rgba="0.6 0.6 0.6 1.0"/>
@@ -126,7 +128,7 @@
     <collision>
       <origin xyz="0 0 0.05" rpy="0 0 0"/>
       <geometry>
-        <cylinder length="0.10" radius="0.02"/>
+        <cylinder length="0.15" radius="0.05"/>
       </geometry>
     </collision>
     <xacro:inertial_box mass="0.6" x="0.04" y="0.04" z="0.10"/>
@@ -135,9 +137,9 @@
   <!-- arm_link2 -->
   <link name="arm_link2">
     <visual>
-      <origin xyz="0 0 0.08" rpy="0 0 0"/>
+      <origin xyz="0 0 0.175" rpy="0 0 0"/>
       <geometry>
-        <cylinder length="0.16" radius="0.018"/>
+        <cylinder length="0.35" radius="0.018"/>
       </geometry>
       <material name="grey">
         <color rgba="0.55 0.55 0.55 1.0"/>
@@ -156,7 +158,7 @@
   <link name="wrist_link">
     <visual>
       <geometry>
-        <sphere radius="0.02"/>
+        <box size="0.05 0.05 0.05"/>
       </geometry>
       <material name="yellow">
         <color rgba="1.0 0.8 0.0 1.0"/>
@@ -164,17 +166,55 @@
     </visual>
     <collision>
       <geometry>
-        <sphere radius="0.02"/>
+        <box size="0.05 0.05 0.05"/>
       </geometry>
     </collision>
-    <xacro:inertial_box mass="0.2" x="0.04" y="0.04" z="0.04"/>
+    <xacro:inertial_box mass="0.2" x="0.05" y="0.05" z="0.05"/>
   </link>
+
+  <link name="wrist_mount_link"/>
+
+  <link name="gripper_base_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.02 0.04 0.02"/>
+      </geometry>
+      <material name="grey"/>
+    </visual>
+  </link>
+
+  <link name="gripper_fixed_stick_link">
+    <visual>
+      <origin xyz="0.06 0.01 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.10 0.01 0.01"/>
+      </geometry>
+      <material name="red"/>
+    </visual>
+  </link>
+
+  <link name="gripper_moving_stick_link">
+    <visual>
+      <origin xyz="0.05 -0.01 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.10 0.01 0.01"/>
+      </geometry>
+      <material name="red"/>
+    </visual>
+  </link>
+
+  <joint name="wrist_to_wrist_mount" type="fixed">
+    <parent link="wrist_link"/>
+    <child link="wrist_mount_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
 
   <!-- joint 1: base -> arm_link1 (yaw) -->
   <joint name="arm_joint1" type="revolute">
     <parent link="base_link"/>
     <child link="arm_link1"/>
-    <origin xyz="0 0 0.05" rpy="0 0 0"/>
+    <origin xyz="0 0 0.10" rpy="0 0 0"/>
     <axis xyz="0 0 1"/>
     <limit lower="-3.14159" upper="3.14159" effort="10.0" velocity="2.0"/>
   </joint>
@@ -183,7 +223,7 @@
   <joint name="arm_joint2" type="revolute">
     <parent link="arm_link1"/>
     <child link="arm_link2"/>
-    <origin xyz="0 0 0.10" rpy="0 0 0"/>
+    <origin xyz="-0.025 0 0.17" rpy="0 -1.570 0"/>
     <axis xyz="0 1 0"/>
     <dynamics damping="0.7" friction="0.1"/>
     <limit lower="-1.57" upper="1.57" effort="10.0" velocity="2.0"/>
@@ -193,23 +233,48 @@
   <joint name="arm_joint3" type="revolute">
     <parent link="arm_link2"/>
     <child link="wrist_link"/>
-    <origin xyz="0 0 0.16" rpy="0 0 0"/>
+    <origin xyz="0 0 0.35" rpy="0 1.570 0"/>
     <axis xyz="0 1 0"/>
     <dynamics damping="0.7" friction="0.1"/>
     <limit lower="-1.57" upper="1.57" effort="10.0" velocity="2.0"/>
   </joint>
 
+  <joint name="wriat_mount_to_gripper_base" type="fixed">
+    <parent link="wrist_mount_link"/>
+    <child link="gripper_base_link"/>
+    <origin xyz="-0.05 0 0" rpy="0 0 3.14"/>
+  </joint>
+
+  <joint name="gripper_fixed_joint" type="fixed">
+    <parent link="gripper_base_link"/>
+    <child link="gripper_fixed_stick_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <joint name="gripper_joint" type="revolute">
+    <parent link="gripper_base_link"/>
+    <child link="gripper_moving_stick_link"/>
+    <origin xyz="0.01 0 0" rpy="0 0 0"/>
+    <axis xyz="0 0 -1"/>
+    <limit lower="0.0" upper="0.6" effort="1.0" velocity="2.0"/>
+  </joint>
+
+  <joint name="gimbal_base_joint" type="fixed">
+    <parent link="wrist_mount_link"/>
+    <child link="gimbal_base_link"/>
+    <origin xyz="0 0 0" rpy="0 0 3.14"/>
+  </joint>
   <!-- yaw joint (gimbal mounted on wrist_link) -->
-  <joint name="yaw_joint" type="revolute">
-    <parent link="wrist_link"/>
+  <joint name="gimbal_yaw_joint" type="revolute">
+    <parent link="gimbal_base_link"/>
     <child link="gimbal_yaw_link"/>
-    <origin xyz="0 0 0.03" rpy="0 0 0"/>
+    <origin xyz="0 0 0.05" rpy="0 0 0"/>
     <axis xyz="0 0 1"/>
     <limit lower="-2.5" upper="2.5" effort="5.0" velocity="2.0"/>
   </joint>
 
   <!-- pitch joint -->
-  <joint name="pitch_joint" type="revolute">
+  <joint name="gimbal_pitch_joint" type="revolute">
     <parent link="gimbal_yaw_link"/>
     <child link="gimbal_pitch_link"/>
     <origin xyz="0 0 0.05" rpy="0 0 0"/>
