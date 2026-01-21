@@ -15,6 +15,7 @@ find_package(cv_bridge REQUIRED)
 find_package(image_transport REQUIRED)
 find_package(OpenCV REQUIRED)
 find_package(visualization_msgs REQUIRED)
+find_package(geometry_msgs REQUIRED)
 
 add_executable(teleop src/gimbal_teleop_node.cpp)
 ament_target_dependencies(teleop
@@ -41,10 +42,18 @@ ament_target_dependencies(target_viz
   visualization_msgs
 )
 
+add_executable(ik_mani src/mani_ik_test_node.cpp)
+ament_target_dependencies(ik_mani
+  rclcpp
+  sensor_msgs
+  geometry_msgs
+)
+
 install(TARGETS
   teleop
   color_tracker
   target_viz
+  ik_mani
   DESTINATION lib/${PROJECT_NAME}
 )
 

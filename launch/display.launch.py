@@ -40,6 +40,6 @@ def generate_launch_description():
 
     return LaunchDescription([
         robot_state_publisher_node,
-        joint_state_publisher_gui_node,
+        # joint_state_publisher_gui_node, #!TODO /joint_states 를 해당 노드 혹은 다른 노드에서 퍼블리싱할지 선택
         rviz_node
     ])
