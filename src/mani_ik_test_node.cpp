@@ -1,10 +1,16 @@
 #include <algorithm>
 #include <cmath>
 #include <string>
+#include <vector>
+#include <unordered_map>
+#include <chrono>
+
+#include <urdf/model.h>
 
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
 #include <geometry_msgs/msg/point.hpp>
+#include <rclcpp/parameter_client.hpp>
 
 static inline double clamp(double v, double lo, double hi){
     return std::max(lo, std::min(v, hi));
@@ -57,41 +63,100 @@ public:
         L2_ = this->declare_parameter<double>("L2", 0.1);
         elbow_sign_ = this->declare_parameter<int>("elbow_sign", +1); // +1 or -1
 
-        joint2_name_ = this->declare_parameter<std::string>("joint2_name", "arm_joint2");
-        joint3_name_ = this->declare_parameter<std::string>("joint3_name", "arm_joint3");
+        {
+            using namespace std::chrono_literals;
+
+            auto exec = std::make_shared<rclcpp::executors::SingleThreadedExecutor>();
+
+            auto client = std::make_shared<rclcpp::SyncParametersClient>(
+                exec,
+                this,
+                "/robot_state_publisher"
+            );
+
+            if (!client->wait_for_service(2s)) {
+                throw std::runtime_error("SyncParametersClient: /robot_state_publisher not available");
+            }
+
+            auto params = client->get_parameters({"robot_description"});
+            if (params.empty() || params[0].get_type() != rclcpp::ParameterType::PARAMETER_STRING) {
+                throw std::runtime_error("Failed to get robot_description from /robot_state_publisher");
+            }
+
+            std::string urdf_xml = params[0].as_string();
+            if (urdf_xml.empty()) {
+                throw std::runtime_error("robot_description from /robot_state_publisher is empty");
+            }
+
+            init_from_urdf(urdf_xml);
+        }
 
         pub_ = this->create_publisher<sensor_msgs::msg::JointState>("/joint_states", 10);
 
         sub_ = this->create_subscription<geometry_msgs::msg::Point>(
-            //!TODO 임시로 모든 조인트 정의, /joint_states 소스 단일화 노드 추가
-            "/ik_target_xy", 10,
-            [this](const geometry_msgs::msg::Point &msg){
-                double th1 = 0.0, th2 = 0.0;
-                if (!std::isfinite(msg.x) || !std::isfinite(msg.y)) {
-                    RCLCPP_WARN(this->get_logger(), "Invalid target point");
-                    return;
-                }
-                const bool done = ik_2link_2d(msg.x, msg.y, L1_, L2_, elbow_sign_, th1, th2);
-
-                if(!done){
-                    RCLCPP_WARN_THROTTLE(
-                        this->get_logger(), *this->get_clock(), 2000,
-                        "(x = %.6f, y = %.6f) is unreachable for L1 = %.3f, L2 = %.3f",
-                        msg.x, msg.y, L1_, L2_
-                    );
-                    return;
-                }
-
-                sensor_msgs::msg::JointState js;
-                js.header.stamp = this->now();
-                js.name = {joint2_name_, joint3_name_};
-                js.position = {th1, th2};
-                RCLCPP_INFO(this->get_logger(), "JS publishing");
-                pub_->publish(js);
-            }
+            "/ik_target_xy", 10, std::bind(&IKJointStatePublisher::point_callback, this, std::placeholders::_1)
         );
 
+        js_timer_ = this->create_wall_timer(std::chrono::milliseconds(20), std::bind(&IKJointStatePublisher::timer_callback, this));
         RCLCPP_INFO(this->get_logger(), "Subscribe : /ik_target_xy (geometry_msgs/point)");
+    }
+
+    void point_callback(const geometry_msgs::msg::Point& msg){
+        double th1 = 0.0, th2 = 0.0;
+        if(!std::isfinite(msg.x) || !std::isfinite(msg.y)){
+            RCLCPP_WARN(this->get_logger(), "Invalid target point");
+            return;
+        }
+        const bool done = ik_2link_2d(msg.x, msg.y, L1_, L2_, elbow_sign_, th1, th2);
+
+        if(!done){
+            RCLCPP_WARN_THROTTLE(
+                this->get_logger(), *this->get_clock(), 2000,
+                "(x = %.6f, y = %.6f) is unreachable for L1 = %.3f, L2 = %.3f",
+                msg.x, msg.y, L1_, L2_
+            );
+            return;
+        }
+
+        joint_pos_["arm_joint2"] = th1;
+        joint_pos_["arm_joint3"] = th2;
+    }
+
+    void timer_callback(){
+        sensor_msgs::msg::JointState js;
+        js.header.stamp = this->now();
+        js.name = joint_names_;
+        js.position.resize(joint_names_.size());
+
+        for(size_t i = 0; i < joint_names_.size(); i++){
+            const auto &name = joint_names_[i];
+            js.position[i] = joint_pos_.at(name);
+        }
+        pub_->publish(js);
+    }
+
+    void init_from_urdf(const std::string& urdf_xml){
+        urdf::Model model;
+        if(!model.initString(urdf_xml)){
+            throw std::runtime_error("URDF parse failed");
+        }
+
+        joint_names_.clear();
+        joint_pos_.clear();
+
+        for(const auto& kv : model.joints_){
+            const auto& j = kv.second;
+            if(!j)continue;
+            if(j->type == urdf::Joint::FIXED) continue;
+
+            joint_names_.push_back(j->name);
+        }
+
+        std::sort(joint_names_.begin(), joint_names_.end());
+
+        for(const auto& name : joint_names_){
+            joint_pos_[name] = 0.0;
+        }
     }
 
 private:
@@ -100,6 +165,10 @@ private:
     std::string joint2_name_{"arm_joint2"};
     std::string joint3_name_{"arm_joint3"};
 
+    std::vector<std::string> joint_names_;
+    std::unordered_map<std::string, double> joint_pos_;
+
+    rclcpp::TimerBase::SharedPtr js_timer_;
     rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr pub_;
     rclcpp::Subscription<geometry_msgs::msg::Point>::SharedPtr sub_;
 };
