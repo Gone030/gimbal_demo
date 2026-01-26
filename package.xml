@@ -16,6 +16,7 @@
   <depend>image_transport</depend>
   <depend>trajectory_msgs</depend>
   <depend>opencv2</depend>
+  <depend>urdf</depend>
 
   <build_depend>xacro</build_depend>
   <exec_depend>xacro</exec_depend>
