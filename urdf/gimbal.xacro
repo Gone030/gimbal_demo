@@ -223,7 +223,7 @@
   <joint name="arm_joint2" type="revolute">
     <parent link="arm_link1"/>
     <child link="arm_link2"/>
-    <origin xyz="-0.025 0 0.17" rpy="0 -1.570 0"/>
+    <origin xyz="0 0 0.17" rpy="0 -1.570 0"/>
     <axis xyz="0 1 0"/>
     <dynamics damping="0.7" friction="0.1"/>
     <limit lower="-1.57" upper="1.57" effort="10.0" velocity="2.0"/>
@@ -353,13 +353,13 @@
       <state_interface name="velocity"/>
     </joint>
 
-    <joint name="yaw_joint">
+    <joint name="gimbal_yaw_joint">
       <command_interface name="position"/>
       <state_interface name="position"/>
       <state_interface name="velocity"/>
     </joint>
 
-    <joint name="pitch_joint">
+    <joint name="gimbal_pitch_joint">
       <command_interface name="position"/>
       <state_interface name="position"/>
       <state_interface name="velocity"/>
