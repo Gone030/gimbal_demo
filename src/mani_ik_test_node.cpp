@@ -118,9 +118,19 @@ public:
             return;
         }
 
+        auto clamp_joint = [this](const std::string& name, double v){
+            auto lim = joint_lim_.find(name);
+            if(lim == joint_lim_.end()) return v;
+            return clamp(v, lim->second.first, lim->second.second);
+        };
+
+        th1 = clamp_joint("arm_joint2", th1);
+        th2 = clamp_joint("arm_joint3", th2);
+
+
         joint_pos_["arm_joint2"] = th1;
         joint_pos_["arm_joint3"] = th2;
-    }
+    } //!todo elbow-up/down, 프레임 연속성 기준 선택 로직 구현
 
     void timer_callback(){
         sensor_msgs::msg::JointState js;
@@ -150,6 +160,9 @@ public:
             if(j->type == urdf::Joint::FIXED) continue;
 
             joint_names_.push_back(j->name);
+            if(j->limits){
+                joint_lim_[j->name] = { j->limits->lower, j->limits->upper };
+            }
         }
 
         std::sort(joint_names_.begin(), joint_names_.end());
@@ -167,6 +180,7 @@ private:
 
     std::vector<std::string> joint_names_;
     std::unordered_map<std::string, double> joint_pos_;
+    std::unordered_map<std::string, std::pair<double,double>> joint_lim_;
 
     rclcpp::TimerBase::SharedPtr js_timer_;
     rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr pub_;
