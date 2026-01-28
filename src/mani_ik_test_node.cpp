@@ -117,11 +117,29 @@ public:
             return wrap_pi(a - b);
         };
 
+        double x = msg.x;
+        double y = msg.y;
+
+        const double r = std::sqrt(x*x + y*y);
+        if(r >= 1e-9){
+            const double r_max = (L1_ + L2_);
+            const double r_min = std::fabs(L1_ - L2_);
+
+            double r_sat = r;
+            if(r > r_max) r_sat = r_max;
+            else if(r < r_min) r_sat = r_min;
+
+            if(r_sat != r){
+                const double s = r_sat / r;
+                x *= s; y *= s;
+            }
+        }
+
         double th1_up = 0.0, th2_up = 0.0;
         double th1_down = 0.0, th2_down = 0.0;
 
         const bool ok_up = ik_2link_2d(msg.x, msg.y, L1_, L2_, +1, th1_up, th2_up);
-        const bool ok_down = ik_2link_2d(msg.x, msg.y, L1_, L2_, +1, th1_down, th2_down);
+        const bool ok_down = ik_2link_2d(msg.x, msg.y, L1_, L2_, -1, th1_down, th2_down);
 
         if(!ok_up && !ok_down){
             RCLCPP_WARN_THROTTLE(
@@ -136,7 +154,7 @@ public:
             th1_up = clamp_joint("arm_joint2", th1_up);
             th2_up = clamp_joint("arm_joint3", th2_up);
         }
-        if(ok_up){
+        if(ok_down){
             th1_down = clamp_joint("arm_joint2", th1_down);
             th2_down = clamp_joint("arm_joint3", th2_down);
         }
