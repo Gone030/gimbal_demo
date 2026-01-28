@@ -4,6 +4,7 @@
 #include <vector>
 #include <unordered_map>
 #include <chrono>
+#include <limits>
 
 #include <urdf/model.h>
 
@@ -61,7 +62,6 @@ public:
     IKJointStatePublisher() : Node("ik_joint_state_publisher"){
         L1_ = this->declare_parameter<double>("L1", 0.175);
         L2_ = this->declare_parameter<double>("L2", 0.1);
-        elbow_sign_ = this->declare_parameter<int>("elbow_sign", +1); // +1 or -1
 
         {
             using namespace std::chrono_literals;
@@ -102,19 +102,8 @@ public:
     }
 
     void point_callback(const geometry_msgs::msg::Point& msg){
-        double th1 = 0.0, th2 = 0.0;
         if(!std::isfinite(msg.x) || !std::isfinite(msg.y)){
             RCLCPP_WARN(this->get_logger(), "Invalid target point");
-            return;
-        }
-        const bool done = ik_2link_2d(msg.x, msg.y, L1_, L2_, elbow_sign_, th1, th2);
-
-        if(!done){
-            RCLCPP_WARN_THROTTLE(
-                this->get_logger(), *this->get_clock(), 2000,
-                "(x = %.6f, y = %.6f) is unreachable for L1 = %.3f, L2 = %.3f",
-                msg.x, msg.y, L1_, L2_
-            );
             return;
         }
 
@@ -124,13 +113,61 @@ public:
             return clamp(v, lim->second.first, lim->second.second);
         };
 
-        th1 = clamp_joint("arm_joint2", th1);
-        th2 = clamp_joint("arm_joint3", th2);
+        auto ang_diff = [](double a, double b){
+            return wrap_pi(a - b);
+        };
+
+        double th1_up = 0.0, th2_up = 0.0;
+        double th1_down = 0.0, th2_down = 0.0;
+
+        const bool ok_up = ik_2link_2d(msg.x, msg.y, L1_, L2_, +1, th1_up, th2_up);
+        const bool ok_down = ik_2link_2d(msg.x, msg.y, L1_, L2_, +1, th1_down, th2_down);
+
+        if(!ok_up && !ok_down){
+            RCLCPP_WARN_THROTTLE(
+                this->get_logger(), *this->get_clock(), 2000,
+                "(x = %.6f, y = %.6f) is unreachable for L1 = %.3f, L2 = %.3f",
+                msg.x, msg.y, L1_, L2_
+            );
+            return;
+        }
+
+        if(ok_up){
+            th1_up = clamp_joint("arm_joint2", th1_up);
+            th2_up = clamp_joint("arm_joint3", th2_up);
+        }
+        if(ok_up){
+            th1_down = clamp_joint("arm_joint2", th1_down);
+            th2_down = clamp_joint("arm_joint3", th2_down);
+        }
+
+        const double prev1 = joint_pos_["arm_joint2"];
+        const double prev2 = joint_pos_["arm_joint3"];
+
+        auto cost = [&](double t1, double t2){
+            return std::fabs(ang_diff(t1, prev1)) + std::fabs(ang_diff(t2, prev2));
+        };
+
+        double th1_sel = 0.0, th2_sel = 0.0;
+
+        if(ok_up && !ok_down){
+            th1_sel = th1_up; th2_sel = th2_up;
+        }else if(!ok_up && ok_down){
+            th1_sel = th1_down; th2_sel = th2_down;
+        }else{
+            const double c_up = cost(th1_up, th2_up);
+            const double c_down = cost(th1_down, th2_down);
+            if(c_up <= c_down){
+                th1_sel = th1_up; th2_sel = th2_up;
+            }else{
+                th1_sel = th1_down; th2_sel = th2_down;
+            }
+        }
 
 
-        joint_pos_["arm_joint2"] = th1;
-        joint_pos_["arm_joint3"] = th2;
-    } //!todo elbow-up/down, 프레임 연속성 기준 선택 로직 구현
+        joint_pos_["arm_joint2"] = th1_sel;
+        joint_pos_["arm_joint3"] = th2_sel;
+    }
 
     void timer_callback(){
         sensor_msgs::msg::JointState js;
@@ -174,7 +211,6 @@ public:
 
 private:
     double L1_{0.175}, L2_{0.1};
-    int elbow_sign_{+1};
     std::string joint2_name_{"arm_joint2"};
     std::string joint3_name_{"arm_joint3"};
 
