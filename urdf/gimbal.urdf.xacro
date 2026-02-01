@@ -1,0 +1,133 @@
+<?xml version="1.0"?>
+<robot name="servo_gimbal_2axis"
+    xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+    <!-- ===== params ===== -->
+    <xacro:property name="gimbal_pkg" value="gimbal_mani"/>
+    <!-- 패키지명으로 교체 -->
+    <xacro:property name="stl_scale" value="0.001 0.001 0.001"/>
+
+    <xacro:property name="yaw_limit" value="3.1416"/>
+    <xacro:property name="pitch_limit" value="1.5708"/>
+
+    <!-- ===== root: arm에서 Fixed_Gripper에 붙을 링크 ===== -->
+    <link name="gimbal_mount_link"> <!-- todo: 모델링 수정 -->
+        <visual>
+            <origin xyz="0 0 0" rpy="0 -1.5707 3.141592"/>
+            <geometry>
+                <mesh filename="package://${gimbal_pkg}/models/gimbal/meshes/gimbal_mount.STL" scale="${stl_scale}"/>
+            </geometry>
+        </visual>
+    </link>
+
+    <link name="gimbal_base_link">
+        <visual>
+            <origin xyz="-0.5 0.0 0.0225" rpy="0.0 0.0 0.0"/>
+            <geometry>
+                <mesh filename="package://${gimbal_pkg}/models/gimbal/meshes/gimbal_base.STL" scale="${stl_scale}"/>
+            </geometry>
+        </visual>
+    </link>
+
+    <joint name="gimbal_base_joint" type="fixed">
+        <parent link="gimbal_mount_link"/>
+        <child link="gimbal_base_link"/>
+        <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+    </joint>
+
+    <link name="gimbal_yaw_servo_link">
+        <visual>
+            <origin xyz="0.005 0.00 0.048" rpy="0 0 0"/>
+            <geometry>
+                <box size="0.023 0.012 0.024"/>
+            </geometry>
+            <material name="servo_dummy">
+                <color rgba="0.3 0.3 0.3 1.0"/>
+            </material>
+        </visual>
+    </link>
+
+    <joint name="gimbal_yaw_servo_mount_joint" type="revolute">
+        <parent link="gimbal_base_link"/>
+        <child  link="gimbal_yaw_servo_link"/>
+        <!-- 서보 축 중심 위치 -->
+        <origin xyz="-0.004 0.02 0" rpy="0 0 0"/>
+        <axis xyz="0 0 1"/>
+        <limit lower="-${yaw_limit}" upper="${yaw_limit}" effort="1.0" velocity="6.0"/>
+    </joint>
+
+
+    <!-- ===== yaw stage ===== -->
+    <link name="gimbal_yaw_link">
+        <visual>
+            <origin xyz="-0.4965 -0.0188 0.05" rpy="0 0 0"/>
+            <geometry>
+                <mesh filename="package://${gimbal_pkg}/models/gimbal/meshes/gimbal_arms.STL" scale="${stl_scale}"/>
+            </geometry>
+        </visual>
+    </link>
+
+    <joint name="gimbal_yaw_joint" type="fixed">
+        <parent link="gimbal_yaw_servo_link"/>
+        <child link="gimbal_yaw_link"/>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+    </joint>
+
+
+    <link name="gimbal_pitch_servo_link">
+        <visual>
+            <origin xyz="0.0 -0.000 0.01" rpy="1.5708 1.5708 0"/>
+            <geometry>
+                <box size="0.023 0.012 0.024"/>
+            </geometry>
+            <material name="servo_dummy">
+                <color rgba="0.3 0.3 0.3 1.0"/>
+            </material>
+        </visual>
+    </link>
+
+    <joint name="gimbal_pitch_servo_joint" type="revolute">
+        <parent link="gimbal_yaw_link"/>
+        <child  link="gimbal_pitch_servo_link"/>
+        <!-- 서보 축 중심 위치 -->
+        <origin xyz="0.0425 -0.003 0.083" rpy="0 0 0"/>
+        <axis xyz="0 1 0"/>
+        <limit lower="-${pitch_limit}" upper="${pitch_limit}" effort="1.0" velocity="6.0"/>
+    </joint>
+
+    <!-- ===== pitch stage (부품 STL) ===== -->
+    <link name="gimbal_pitch_link">
+        <visual>
+            <origin xyz="-0.539 -0.018 -0.0335" rpy="0 0 0"/>
+            <geometry>
+                <mesh filename="package://${gimbal_pkg}/models/gimbal/meshes/gimbal_tilt.STL" scale="${stl_scale}"/>
+            </geometry>
+        </visual>
+    </link>
+
+    <joint name="gimbal_pitch_joint" type="fixed">
+        <parent link="gimbal_pitch_servo_link"/>
+        <child link="gimbal_pitch_link"/>
+        <!-- pitch 회전축 위치(yaw 링크 기준) -->
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <axis xyz="0 1 0"/>
+        <limit lower="-${pitch_limit}" upper="${pitch_limit}" effort="1.0" velocity="6.0"/>
+    </joint>
+
+        <!-- ===== camera stage (부품 STL 또는 카메라 STL) ===== -->
+        <!-- <link name="gimbal_camera_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://${gimbal_pkg}/models/gimbal/meshes/camera_part.stl" scale="${stl_scale}"/>
+      </geometry>
+    </visual>
+  </link>
+
+  <joint name="gimbal_camera_joint" type="fixed">
+    <parent link="gimbal_pitch_link"/>
+    <child link="gimbal_camera_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint> -->
+
+    </robot>
