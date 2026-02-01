@@ -1,0 +1,9 @@
+Heavy Duty Pan&Tilt for FPV
+
+Author: Filatech
+Source: https://www.thingiverse.com/thing:<ID>
+License: Creative Commons Attribution-NonCommercial-NoDerivatives 4.0 International (CC BY-NC-ND 4.0)
+
+This work is licensed under the Creative Commons Attribution-NonCommercial-NoDerivatives license.
+All STL files are used unmodified.
+Non-commercial use only.
