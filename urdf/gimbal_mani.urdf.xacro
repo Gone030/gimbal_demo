@@ -1,0 +1,99 @@
+<?xml version="1.0"?>
+<robot name="gimbal_mani"
+    xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+    <!-- arm -->
+    <xacro:include filename="$(find gimbal_mani)/urdf/so_100_arm_5dof.urdf"/>
+
+    <!-- gimbal -->
+    <xacro:include filename="$(find gimbal_mani)/urdf/gimbal.urdf.xacro"/>
+
+    <!-- arm + gimbal 연결: mount(arm) -> base(gimbal) -->
+    <joint name="arm_to_gimbal_joint" type="fixed">
+        <parent link="gimbal_mount_link"/>
+        <!-- arm 쪽에 존재 -->
+        <child link="gimbal_base_link"/>
+        <!-- gimbal 쪽에 존재 -->
+        <origin xyz="0.002 0.004 0" rpy="3.1416 -1.5707 0"/>
+    </joint>
+
+    <plugin filename="gz_ros2_control-system" name="gz_ros2_control::GazeboSimROS2ControlPlugin">
+        <parameters>$(find gimbal_mani)/config/controllers.yaml</parameters>
+        <robot_param>robot_description</robot_param>
+        <robot_param_node>robot_state_publisher</robot_param_node>
+    </plugin>
+
+
+    <ros2_control name="gz_ros2_control/GazeboSimSystem" type="system">
+        <hardware>
+            <plugin>gz_ros2_control/GazeboSimSystem</plugin>
+        </hardware>
+        <joint name="Shoulder_Rotation">
+            <command_interface name="position">
+                <param name="min">-3.14</param>                <!-- todo: 동일 조인트 limit만 보강으로 변경 -->
+                <param name="max">3.14</param>
+            </command_interface>
+            <state_interface name="position"/>
+            <state_interface name="velocity"/>
+            <state_interface name="effort"/>
+        </joint>
+        <joint name="Shoulder_Pitch">
+            <command_interface name="position">
+                <param name="min">-3.14</param>
+                <param name="max">3.14</param>
+            </command_interface>
+            <state_interface name="position"/>
+            <state_interface name="velocity"/>
+            <state_interface name="effort"/>
+        </joint>
+        <joint name="Elbow">
+            <command_interface name="position">
+                <param name="min">-3.14</param>
+                <param name="max">3.14</param>
+            </command_interface>
+            <state_interface name="position"/>
+            <state_interface name="velocity"/>
+            <state_interface name="effort"/>
+        </joint>
+        <joint name="Wrist_Pitch">
+            <command_interface name="position">
+                <param name="min">-3.14</param>
+                <param name="max">3.14</param>
+            </command_interface>
+            <state_interface name="position"/>
+            <state_interface name="velocity"/>
+            <state_interface name="effort"/>
+        </joint>
+        <joint name="Wrist_Roll">
+            <command_interface name="position">
+                <param name="min">-3.14</param>
+                <param name="max">3.14</param>
+            </command_interface>
+            <state_interface name="position"/>
+            <state_interface name="velocity"/>
+            <state_interface name="effort"/>
+        </joint>
+        <joint name="Gripper">
+            <command_interface name="position">
+                <param name="min">0.0</param>
+                <param name="max">1.57</param>
+            </command_interface>
+            <state_interface name="position"/>
+            <state_interface name="velocity"/>
+            <state_interface name="effort"/>
+        </joint>
+
+        <joint name="gimbal_yaw_servo_joint">
+            <command_interface name="position"/>
+            <state_interface name="position"/>
+            <state_interface name="velocity"/>
+        </joint>
+        <joint name="gimbal_pitch_servo_link">
+            <command_interface name="position"/>
+            <state_interface name="position"/>
+            <state_interface name="velocity"/>
+        </joint>
+
+    </ros2_control>
+
+</robot>
