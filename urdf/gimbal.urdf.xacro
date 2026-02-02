@@ -4,21 +4,19 @@
 
     <!-- ===== params ===== -->
     <xacro:property name="gimbal_pkg" value="gimbal_mani"/>
-    <!-- 패키지명으로 교체 -->
     <xacro:property name="stl_scale" value="0.001 0.001 0.001"/>
-
     <xacro:property name="yaw_limit" value="3.1416"/>
     <xacro:property name="pitch_limit" value="1.5708"/>
 
     <!-- ===== root: arm에서 Fixed_Gripper에 붙을 링크 ===== -->
-    <link name="gimbal_mount_link"> <!-- todo: 모델링 수정 -->
+    <!-- <link name="gimbal_mount_link">
         <visual>
             <origin xyz="0 0 0" rpy="0 -1.5707 3.141592"/>
             <geometry>
-                <mesh filename="package://${gimbal_pkg}/models/gimbal/meshes/gimbal_mount.STL" scale="${stl_scale}"/>
+                <mesh filename="package://${gimbal_pkg}/models/gimbal/meshes/gimbal_mount2.stl" scale="${stl_scale}"/>
             </geometry>
         </visual>
-    </link>
+    </link> -->
 
     <link name="gimbal_base_link">
         <visual>
@@ -29,11 +27,11 @@
         </visual>
     </link>
 
-    <joint name="gimbal_base_joint" type="fixed">
+    <!-- <joint name="gimbal_base_joint" type="fixed">
         <parent link="gimbal_mount_link"/>
         <child link="gimbal_base_link"/>
         <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
-    </joint>
+    </joint> -->
 
     <link name="gimbal_yaw_servo_link">
         <visual>
@@ -47,9 +45,9 @@
         </visual>
     </link>
 
-    <joint name="gimbal_yaw_servo_mount_joint" type="revolute">
+    <joint name="gimbal_yaw_servo_joint" type="revolute">
         <parent link="gimbal_base_link"/>
-        <child  link="gimbal_yaw_servo_link"/>
+        <child link="gimbal_yaw_servo_link"/>
         <!-- 서보 축 중심 위치 -->
         <origin xyz="-0.004 0.02 0" rpy="0 0 0"/>
         <axis xyz="0 0 1"/>
@@ -88,14 +86,14 @@
 
     <joint name="gimbal_pitch_servo_joint" type="revolute">
         <parent link="gimbal_yaw_link"/>
-        <child  link="gimbal_pitch_servo_link"/>
+        <child link="gimbal_pitch_servo_link"/>
         <!-- 서보 축 중심 위치 -->
         <origin xyz="0.0425 -0.003 0.083" rpy="0 0 0"/>
         <axis xyz="0 1 0"/>
         <limit lower="-${pitch_limit}" upper="${pitch_limit}" effort="1.0" velocity="6.0"/>
     </joint>
 
-    <!-- ===== pitch stage (부품 STL) ===== -->
+    <!-- ===== pitch stage ===== -->
     <link name="gimbal_pitch_link">
         <visual>
             <origin xyz="-0.539 -0.018 -0.0335" rpy="0 0 0"/>
@@ -114,8 +112,8 @@
         <limit lower="-${pitch_limit}" upper="${pitch_limit}" effort="1.0" velocity="6.0"/>
     </joint>
 
-        <!-- ===== camera stage (부품 STL 또는 카메라 STL) ===== -->
-        <!-- <link name="gimbal_camera_link">
+    <!-- ===== camera stage ===== -->
+    <!-- <link name="gimbal_camera_link">
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
@@ -130,4 +128,4 @@
     <origin xyz="0 0 0" rpy="0 0 0"/>
   </joint> -->
 
-    </robot>
+</robot>
