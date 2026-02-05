@@ -18,7 +18,7 @@ class VisualTracker : public rclcpp::Node{
     public:
         VisualTracker() : Node("visual_tracker"){
             image_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
-                "/gimbal/gimbal_camera/image_raw",
+                "/joint_trajectory_in/gimbal",
                 rclcpp::SensorDataQoS(),
                 std::bind(&VisualTracker::image_callback, this, _1)
             );
@@ -139,7 +139,7 @@ class VisualTracker : public rclcpp::Node{
         }
         void publish_trajectory(double yaw, double pitch){
             trajectory_msgs::msg::JointTrajectory traj;
-            traj.joint_names = {"yaw_joint", "pitch_joint"};
+            traj.joint_names = {"gimbal_yaw_servo_joint", "gimbal_pitch_servo_link"};
 
             trajectory_msgs::msg::JointTrajectoryPoint p;
             p.positions = {yaw, pitch};

@@ -18,7 +18,7 @@ class GimbalTeleopNode : public rclcpp::Node
           manual_mode_(true)
         {
             traj_pub_ = this->create_publisher<trajectory_msgs::msg::JointTrajectory>(
-                "/gimbal_controller/joint_trajectory", 10
+                "/joint_trajectory_in/gimbal", 10
             );
 
             timer_ = this->create_wall_timer(
@@ -117,7 +117,7 @@ class GimbalTeleopNode : public rclcpp::Node
 
         void publishTrajectory(){
             trajectory_msgs::msg::JointTrajectory traj;
-            traj.joint_names = {"yaw_joint", "pitch_joint"};
+            traj.joint_names = {"gimbal_yaw_servo_joint", "gimbal_pitch_servo_link"};
 
             trajectory_msgs::msg::JointTrajectoryPoint p;
             p.positions = {target_yaw_, target_pitch_};
