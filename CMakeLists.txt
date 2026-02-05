@@ -18,6 +18,9 @@ find_package(visualization_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(urdf REQUIRED)
 
+add_subdirectory(src/lower_layer)
+
+
 add_executable(teleop src/gimbal_teleop_node.cpp)
 ament_target_dependencies(teleop
   rclcpp
