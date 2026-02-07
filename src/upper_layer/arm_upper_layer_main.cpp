@@ -15,7 +15,7 @@
 class Arm_UpperLayerMain : public rclcpp::Node{
     public:
         Arm_UpperLayerMain() : Node("arm_upper_layer_main"){
-            L1_ = this->declare_parameter<double>("L1", 0.175);
+            L1_ = this->declare_parameter<double>("L1", 0.175); // 실제 길이에 맞게 수정해야함
             L2_ = this->declare_parameter<double>("L2", 0.1);
 
             saturate_reach_ = this->declare_parameter<bool>("saturate_reach", true);
@@ -139,6 +139,10 @@ class Arm_UpperLayerMain : public rclcpp::Node{
             goal_[0] = wrap_pi(psi);
             goal_[1] = shoulder_pitch_sel;
             goal_[2] = elbow_sel;
+
+            goal_[3] = wrap_pi(-(goal_[1] + goal_[2]));
+
+            goal_[4] = wrap_pi(msg.object_yaw); // temp, 비전, 프레임 정책에 따라 바뀔 수 있음
 
             target_valid_ = true;
         }
