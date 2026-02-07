@@ -19,59 +19,33 @@ find_package(geometry_msgs REQUIRED)
 find_package(urdf REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 
-add_subdirectory(src/lower_layer)
-add_subdirectory(src/upper_layer)
+set(MSG_TARGET ${PROJECT_NAME}_interfaces)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/TargetBearingRange.msg"
   DEPENDENCIES std_msgs
 )
 
+rosidl_get_typesupport_target(cpp_typesupport_target ${PROJECT_NAME} "rosidl_typesupport_cpp")
 
-add_executable(teleop src/gimbal_teleop_node.cpp)
-ament_target_dependencies(teleop
-  rclcpp
-  std_msgs
-  trajectory_msgs
+add_subdirectory(src/lower_layer)
+add_subdirectory(src/upper_layer)
+
+
+
+install(DIRECTORY launch
+  DESTINATION share/${PROJECT_NAME}
 )
 
-add_executable(color_tracker src/gimbal_visual_tracker_color_node.cpp)
-ament_target_dependencies(color_tracker
-  rclcpp
-  trajectory_msgs
-  std_msgs
-  sensor_msgs
-  cv_bridge
-  image_transport
-  OpenCV
+install(DIRECTORY config rviz
+  DESTINATION share/${PROJECT_NAME}
 )
 
-add_executable(target_viz src/target_visualizer.cpp)
-ament_target_dependencies(target_viz
-  rclcpp
-  sensor_msgs
-  visualization_msgs
+install(DIRECTORY urdf models
+  DESTINATION share/${PROJECT_NAME}
 )
 
-
-add_executable(ik_mani src/mani_ik_test_node.cpp)
-ament_target_dependencies(ik_mani
-  rclcpp
-  sensor_msgs
-  geometry_msgs
-  urdf
-)
-
-install(TARGETS
-  teleop
-  color_tracker
-  target_viz
-  ik_mani
-  DESTINATION lib/${PROJECT_NAME}
-)
-
-install(
-  DIRECTORY urdf launch config rviz
+install(DIRECTORY msg
   DESTINATION share/${PROJECT_NAME}
 )
 
