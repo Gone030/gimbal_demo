@@ -17,8 +17,15 @@ find_package(OpenCV REQUIRED)
 find_package(visualization_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(urdf REQUIRED)
+find_package(rosidl_default_generators REQUIRED)
 
 add_subdirectory(src/lower_layer)
+add_subdirectory(src/upper_layer)
+
+rosidl_generate_interfaces(${PROJECT_NAME}
+  "msg/TargetBearingRange.msg"
+  DEPENDENCIES std_msgs
+)
 
 
 add_executable(teleop src/gimbal_teleop_node.cpp)
@@ -67,5 +74,7 @@ install(
   DIRECTORY urdf launch config rviz
   DESTINATION share/${PROJECT_NAME}
 )
+
+ament_export_dependencies(rosidl_default_runtime)
 
 ament_package()
