@@ -23,6 +23,7 @@ set(MSG_TARGET ${PROJECT_NAME}_interfaces)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/TargetBearingRange.msg"
+  "msg/GimbalManualCmd.msg"
   DEPENDENCIES std_msgs
 )
 
