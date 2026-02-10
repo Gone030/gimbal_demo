@@ -88,7 +88,7 @@
             <state_interface name="position"/>
             <state_interface name="velocity"/>
         </joint>
-        <joint name="gimbal_pitch_servo_link">
+        <joint name="gimbal_pitch_servo_joint">
             <command_interface name="position"/>
             <state_interface name="position"/>
             <state_interface name="velocity"/>

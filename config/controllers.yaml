@@ -37,7 +37,7 @@ gimbal_controller:
   ros__parameters:
     joints:
       - gimbal_yaw_servo_joint
-      - gimbal_pitch_servo_link
+      - gimbal_pitch_servo_joint
 
     command_interfaces:
       - position
