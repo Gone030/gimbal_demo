@@ -147,6 +147,7 @@
       link="Shoulder_Rotation_Pitch" />
     <axis
       xyz="0 1 0" />
+    <limit lower="-3.14" upper="3.14" effort="10" velocity="2.0"/>
   </joint>
   <link
     name="Upper_Arm">
@@ -200,6 +201,7 @@
       link="Upper_Arm" />
     <axis
       xyz="1 0 0" />
+    <limit lower="-3.14" upper="3.14" effort="10" velocity="2.0"/>
   </joint>
   <link
     name="Lower_Arm">
@@ -253,6 +255,7 @@
       link="Lower_Arm" />
     <axis
       xyz="1 0 0" />
+    <limit lower="-3.14" upper="3.14" effort="10" velocity="2.0"/>
   </joint>
   <link
     name="Wrist_Pitch_Roll">
@@ -306,6 +309,7 @@
       link="Wrist_Pitch_Roll" />
     <axis
       xyz="1 0 0" />
+    <limit lower="-3.14" upper="3.14" effort="10" velocity="2.0"/>
   </joint>
   <link
     name="Fixed_Gripper">
@@ -378,6 +382,7 @@
       link="Fixed_Gripper" />
     <axis
       xyz="0 1 0" />
+    <limit lower="-3.14" upper="3.14" effort="10" velocity="2.0"/>
   </joint>
   <link
     name="Moving_Jaw">
@@ -431,5 +436,6 @@
       link="Moving_Jaw" />
     <axis
       xyz="0 0 1" />
+    <limit lower="-3.14" upper="3.14" effort="10" velocity="2.0"/>
   </joint>
 </robot>
