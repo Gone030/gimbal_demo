@@ -113,19 +113,12 @@
     </joint>
 
     <!-- ===== camera stage ===== -->
-    <!-- <link name="gimbal_camera_link">
-    <visual>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <geometry>
-        <mesh filename="package://${gimbal_pkg}/models/gimbal/meshes/camera_part.stl" scale="${stl_scale}"/>
-      </geometry>
-    </visual>
-  </link>
+    <link name="gimbal_camera_link"/>
 
-  <joint name="gimbal_camera_joint" type="fixed">
-    <parent link="gimbal_pitch_link"/>
-    <child link="gimbal_camera_link"/>
-    <origin xyz="0 0 0" rpy="0 0 0"/>
-  </joint> -->
+    <joint name="gimbal_camera_joint" type="fixed">
+        <parent link="gimbal_pitch_link"/>
+        <child link="gimbal_camera_link"/>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+    </joint>
 
 </robot>
