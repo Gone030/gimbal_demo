@@ -22,10 +22,11 @@ def _sanitize_urdf_xml(xml: str) -> str:
 def generate_launch_description():
     pkg_share = get_package_share_directory('gimbal_mani')
 
-    xacro_path = os.path.join(pkg_share, 'urdf', 'gimbal.xacro')
+    xacro_path = os.path.join(pkg_share, 'urdf', 'gimbal_mani.urdf.xacro')
     world_path = os.path.join(pkg_share, 'urdf', 'gimbal.sdf')
 
-    doc = xacro.process_file(xacro_path)
+    mesh_prefix = 'file://' + pkg_share
+    doc = xacro.process_file(xacro_path, mappings={'mesh_prefix': mesh_prefix})
     robot_desc = doc.toxml()
     robot_desc = _sanitize_urdf_xml(robot_desc)
 
@@ -50,7 +51,9 @@ def generate_launch_description():
                 'gazebo.launch.py'
             )
         ),
-        launch_arguments={'world': world_path}.items(),
+        launch_arguments={'world': world_path,
+                          'verbose': 'true'
+                          }.items(),
     )
 
     # Gazebo Spawn Entity
@@ -59,7 +62,7 @@ def generate_launch_description():
         executable='spawn_entity.py',
         arguments=[
             '-topic', 'robot_description',
-            '-entity', 'gimbal'
+            '-entity', 'gimbal_mani'
         ],
         output='screen',
     )
@@ -105,6 +108,6 @@ def generate_launch_description():
         gazebo,
         node_robot_state_publisher,
         spawn_entity,
-        start_joint_state_broadcaster,
-        start_gimbal_controller,
+        # start_joint_state_broadcaster,
+        # start_gimbal_controller,
     ])
