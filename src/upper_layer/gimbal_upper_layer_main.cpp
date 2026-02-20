@@ -66,8 +66,8 @@ private:
         }
         else
         {
-            goal_yaw = vision_yaw_;
-            goal_pitch = vision_pitch_;
+            goal_yaw += vision_yaw_;
+            goal_pitch += vision_pitch_;
         }
         publish_traj(goal_yaw, goal_pitch);
     }
