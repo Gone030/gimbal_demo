@@ -2,8 +2,11 @@
 <robot name="gimbal_mani"
     xmlns:xacro="http://www.ros.org/wiki/xacro">
 
+    <xacro:arg name="mesh_prefix" default=""/>
+    <xacro:property name="mesh_prefix" value="$(arg mesh_prefix)"/>
+
     <!-- arm -->
-    <xacro:include filename="$(find gimbal_mani)/urdf/so_100_arm_5dof.urdf"/>
+    <xacro:include filename="$(find gimbal_mani)/urdf/so_100_arm_5dof.urdf.xacro"/>
 
     <!-- gimbal -->
     <xacro:include filename="$(find gimbal_mani)/urdf/gimbal.urdf.xacro"/>

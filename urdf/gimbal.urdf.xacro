@@ -2,8 +2,10 @@
 <robot name="servo_gimbal_2axis"
     xmlns:xacro="http://www.ros.org/wiki/xacro">
 
+    <xacro:arg name="mesh_prefix" default=""/>
+
+
     <!-- ===== params ===== -->
-    <xacro:property name="gimbal_pkg" value="gimbal_mani"/>
     <xacro:property name="stl_scale" value="0.001 0.001 0.001"/>
     <xacro:property name="yaw_limit" value="3.1416"/>
     <xacro:property name="pitch_limit" value="1.5708"/>
@@ -13,7 +15,7 @@
         <visual>
             <origin xyz="0 0 0" rpy="0 -1.5707 3.141592"/>
             <geometry>
-                <mesh filename="package://${gimbal_pkg}/models/gimbal/meshes/gimbal_mount2.stl" scale="${stl_scale}"/>
+                <mesh filename="${mesh_prefix}/models/gimbal/meshes/gimbal_mount2.stl" scale="${stl_scale}"/>
             </geometry>
         </visual>
     </link> -->
@@ -22,7 +24,7 @@
         <visual>
             <origin xyz="-0.5 0.0 0.0225" rpy="0.0 0.0 0.0"/>
             <geometry>
-                <mesh filename="package://${gimbal_pkg}/models/gimbal/meshes/gimbal_base.STL" scale="${stl_scale}"/>
+                <mesh filename="${mesh_prefix}/models/gimbal/meshes/gimbal_base.STL" scale="${stl_scale}"/>
             </geometry>
         </visual>
     </link>
@@ -60,7 +62,7 @@
         <visual>
             <origin xyz="-0.4965 -0.0188 0.05" rpy="0 0 0"/>
             <geometry>
-                <mesh filename="package://${gimbal_pkg}/models/gimbal/meshes/gimbal_arms.STL" scale="${stl_scale}"/>
+                <mesh filename="${mesh_prefix}/models/gimbal/meshes/gimbal_arms.STL" scale="${stl_scale}"/>
             </geometry>
         </visual>
     </link>
@@ -98,7 +100,7 @@
         <visual>
             <origin xyz="-0.539 -0.018 -0.0335" rpy="0 0 0"/>
             <geometry>
-                <mesh filename="package://${gimbal_pkg}/models/gimbal/meshes/gimbal_tilt.STL" scale="${stl_scale}"/>
+                <mesh filename="${mesh_prefix}/models/gimbal/meshes/gimbal_tilt.STL" scale="${stl_scale}"/>
             </geometry>
         </visual>
     </link>
