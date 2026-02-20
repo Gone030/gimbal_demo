@@ -3,34 +3,8 @@
      Commit Version: 1.6.0-1-g15f4949  Build Version: 1.6.7594.29634
      For more information, please see http://wiki.ros.org/sw_urdf_exporter -->
 <robot
-  name="so_100_arm">
-  <gazebo>
-    <plugin filename="libgz-sim-physics-system.so"
-            name="gz::sim::systems::Physics">
-        <engine>
-            <filename>libgz-physics-ode-plugin.so</filename>
-        </engine>
-        <update_rate>1000</update_rate>
-        <gravity>0 0 -9.8</gravity>
-        <max_step_size>0.001</max_step_size>
-        <real_time_factor>1.0</real_time_factor>
-        <real_time_update_rate>1000</real_time_update_rate>
-        <ode>
-            <solver>
-                <type>quick</type>
-                <iters>50</iters>
-            </solver>
-        </ode>
-    </plugin>
-    <plugin filename="libgz-sim-joint-state-publisher-system.so"
-            name="gz::sim::systems::JointStatePublisher">
-    </plugin>
-
-    <plugin filename="libgz-sim-pose-publisher-system.so"
-            name="gz::sim::systems::PosePublisher">
-    </plugin>
-
-  </gazebo>
+  name="so_100_arm" xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <xacro:arg name="mesh_prefix" default=""/>
 
 
 <!--
@@ -76,7 +50,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="package://gimbal_mani/models/so_100_arm_5dof/meshes/Base.STL" />
+          filename="${mesh_prefix}/models/so_100_arm_5dof/meshes/Base.STL" />
       </geometry>
       <material
         name="">
@@ -90,7 +64,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="package://gimbal_mani/models/so_100_arm_5dof/meshes/Base.STL" />
+          filename="${mesh_prefix}/models/so_100_arm_5dof/meshes/Base.STL" />
       </geometry>
     </collision>
   </link>
@@ -117,7 +91,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="package://gimbal_mani/models/so_100_arm_5dof/meshes/Shoulder_Rotation_Pitch.STL" />
+          filename="${mesh_prefix}/models/so_100_arm_5dof/meshes/Shoulder_Rotation_Pitch.STL" />
       </geometry>
       <material
         name="">
@@ -131,7 +105,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="package://gimbal_mani/models/so_100_arm_5dof/meshes/Shoulder_Rotation_Pitch.STL" />
+          filename="${mesh_prefix}/models/so_100_arm_5dof/meshes/Shoulder_Rotation_Pitch.STL" />
       </geometry>
     </collision>
   </link>
@@ -171,7 +145,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="package://gimbal_mani/models/so_100_arm_5dof/meshes/Upper_Arm.STL" />
+          filename="${mesh_prefix}/models/so_100_arm_5dof/meshes/Upper_Arm.STL" />
       </geometry>
       <material
         name="">
@@ -185,7 +159,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="package://gimbal_mani/models/so_100_arm_5dof/meshes/Upper_Arm.STL" />
+          filename="${mesh_prefix}/models/so_100_arm_5dof/meshes/Upper_Arm.STL" />
       </geometry>
     </collision>
   </link>
@@ -225,7 +199,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="package://gimbal_mani/models/so_100_arm_5dof/meshes/Lower_Arm.STL" />
+          filename="${mesh_prefix}/models/so_100_arm_5dof/meshes/Lower_Arm.STL" />
       </geometry>
       <material
         name="">
@@ -239,7 +213,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="package://gimbal_mani/models/so_100_arm_5dof/meshes/Lower_Arm.STL" />
+          filename="${mesh_prefix}/models/so_100_arm_5dof/meshes/Lower_Arm.STL" />
       </geometry>
     </collision>
   </link>
@@ -279,7 +253,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="package://gimbal_mani/models/so_100_arm_5dof/meshes/Wrist_Pitch_Roll.STL" />
+          filename="${mesh_prefix}/models/so_100_arm_5dof/meshes/Wrist_Pitch_Roll.STL" />
       </geometry>
       <material
         name="">
@@ -293,7 +267,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="package://gimbal_mani/models/so_100_arm_5dof/meshes/Wrist_Pitch_Roll.STL" />
+          filename="${mesh_prefix}/models/so_100_arm_5dof/meshes/Wrist_Pitch_Roll.STL" />
       </geometry>
     </collision>
   </link>
@@ -333,7 +307,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="package://gimbal_mani/models/so_100_arm_5dof/meshes/Fixed_Gripper.STL" />
+          filename="${mesh_prefix}/models/so_100_arm_5dof/meshes/Fixed_Gripper.STL" />
       </geometry>
       <material
         name="">
@@ -347,7 +321,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="package://gimbal_mani/models/so_100_arm_5dof/meshes/Fixed_Gripper.STL" />
+          filename="${mesh_prefix}/models/so_100_arm_5dof/meshes/Fixed_Gripper.STL" />
       </geometry>
     </collision>
   </link>
@@ -357,7 +331,7 @@
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
         <mesh
-          filename="package://gimbal_mani/models/gimbal/meshes/gimbal_mount.STL"
+          filename="${mesh_prefix}/models/gimbal/meshes/gimbal_mount.STL"
           scale="0.001 0.001 0.001"/>
       </geometry>
       <material name="mount_color">
@@ -406,7 +380,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="package://gimbal_mani/models/so_100_arm_5dof/meshes/Moving_Jaw.STL" />
+          filename="${mesh_prefix}/models/so_100_arm_5dof/meshes/Moving_Jaw.STL" />
       </geometry>
       <material
         name="">
@@ -420,7 +394,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="package://gimbal_mani/models/so_100_arm_5dof/meshes/Moving_Jaw.STL" />
+          filename="${mesh_prefix}/models/so_100_arm_5dof/meshes/Moving_Jaw.STL" />
       </geometry>
     </collision>
   </link>
