@@ -30,6 +30,13 @@ public:
         tbr_pub_ = create_publisher<gimbal_mani::msg::TargetBearingRange>(
             "/target", 10);
 
+        command_sub_ = create_subscription<std_msgs::msg::String>(
+            "/tracker/command", 10,
+            [this](const std_msgs::msg::String &msg)
+            {
+                target_color_ = msg.data;
+            });
+
         // ---- mode select
         if (input_mode_ == "sim")
         {
@@ -50,16 +57,72 @@ public:
     }
 
 private:
-    void on_sim_image(const sensor_msgs::msg::Image & /*msg*/)
+    void on_sim_image(const sensor_msgs::msg::Image &msg)
     {
-        // TODO:
-        // - msg → cv::Mat 변환
-        // - 타겟 검출/추정
-        // - TargetBearingRange 채우기
-        // publish_target(...)
+        cv_bridge::CvImagePtr cv_ptr;
+        try
+        {
+            cv_ptr = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::BGR8);
+        }
+        catch (const cv_bridge::Exception &e)
+        {
+            RCLCPP_ERROR(get_logger(), "cv_bridge error: %s", e.what());
+            return;
+        }
 
-        // 스켈레톤이므로 publish만 형태로 남김
-        publish_dummy();
+        if (target_color_ == "NONE")
+        {
+            return;
+        }
+
+        cv::Mat hsv_img, mask;
+        cv::cvtColor(cv_ptr->image, hsv_img, cv::COLOR_BGR2HSV);
+
+        if (target_color_ == "BLUE")
+        {
+            cv::inRange(hsv_img, cv::Scalar(100, 120, 70), cv::Scalar(140, 255, 255), mask);
+        }
+        else if (target_color_ == "GREEN")
+        {
+            cv::inRange(hsv_img, cv::Scalar(40, 120, 70), cv::Scalar(80, 255, 255), mask);
+        }
+        else
+        { // RED
+            cv::Mat mask1, mask2;
+            cv::inRange(hsv_img, cv::Scalar(0, 120, 70), cv::Scalar(10, 255, 255), mask1);
+            cv::inRange(hsv_img, cv::Scalar(170, 120, 70), cv::Scalar(180, 255, 255), mask2);
+            mask = mask1 | mask2;
+        }
+
+        const int center_x = static_cast<int>(msg.width) / 2;
+        const int center_y = static_cast<int>(msg.height) / 2;
+
+        cv::Moments m = cv::moments(mask);
+        if (m.m00 <= 1000)
+            return;
+
+        const int cx = static_cast<int>(m.m10 / m.m00);
+        const int cy = static_cast<int>(m.m01 / m.m00);
+
+        int error_x = center_x - cx;
+        int error_y = center_y - cy;
+
+        const int deadzone = 20;
+        if (std::abs(error_x) < deadzone)
+            error_x = 0;
+        if (std::abs(error_y) < deadzone)
+            error_y = 0;
+
+        const double gain_yaw = 0.0005;
+        const double gain_pitch = 0.00025;
+
+        const double dyaw = (error_x * gain_yaw);
+        const double dpitch = -(error_y * gain_pitch);
+
+        if (error_x != 0 || error_y != 0)
+        {
+            publish_target(dyaw, dpitch, 0.0, 0.0);
+        }
     }
 
     void start_real_capture()
@@ -92,20 +155,17 @@ private:
         // - TargetBearingRange 채우기
         // publish_target(...)
 
-        publish_dummy();
     }
 
-    void publish_dummy()
+    void publish_target(double yaw, double pitch, double range, double object_yaw)
     {
-        // TODO: 실제 로직 들어가면 삭제
         gimbal_mani::msg::TargetBearingRange out;
         out.header.stamp = now();
-        out.header.frame_id = "REPLACE_WITH_ACTUAL_FRAME_ID";
-        out.yaw = 0.0;
-        out.pitch = 0.0;
-        out.range = 0.0;
-        out.object_yaw = 0.0;
-
+        out.header.frame_id = "gimbal_camera_link";
+        out.yaw = yaw;
+        out.pitch = pitch;
+        out.range = range;
+        out.object_yaw = object_yaw;
         tbr_pub_->publish(out);
     }
 
@@ -116,10 +176,15 @@ private:
     std::string device_;
     double fps_ = 30.0;
 
+    std::string target_color_ = "NONE";
+    double current_yaw_ = 0.0;
+    double current_pitch_ = 0.0;
+
     // ros
     rclcpp::Publisher<gimbal_mani::msg::TargetBearingRange>::SharedPtr tbr_pub_;
     rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr image_sub_;
     rclcpp::TimerBase::SharedPtr timer_;
+    rclcpp::Subscription<std_msgs::msg::String>::SharedPtr command_sub_;
 
     // real capture
     cv::VideoCapture cap_;
