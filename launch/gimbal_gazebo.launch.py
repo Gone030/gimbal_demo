@@ -52,6 +52,7 @@ def generate_launch_description():
             )
         ),
         launch_arguments={'world': world_path,
+                          'gui': 'false',
                           'verbose': 'true'
                           }.items(),
     )
@@ -62,7 +63,7 @@ def generate_launch_description():
         executable='spawn_entity.py',
         arguments=[
             '-topic', 'robot_description',
-            '-entity', 'gimbal_mani'
+            '-entity', 'gimbal_mani',
         ],
         output='screen',
     )
@@ -90,6 +91,17 @@ def generate_launch_description():
         output='screen',
     )
 
+    arm_controller_spawner = Node(
+        package='controller_manager',
+        executable='spawner',
+        arguments=[
+            'arm_controller',
+            '--controller-manager', '/controller_manager',
+            '--controller-manager-timeout', '60'
+        ],
+        output='screen',
+    )
+
     start_joint_state_broadcaster = RegisterEventHandler(
         OnProcessExit(
             target_action=spawn_entity,
@@ -104,10 +116,21 @@ def generate_launch_description():
         )
     )
 
+    start_arm_controller = RegisterEventHandler(
+        OnProcessExit(
+            target_action=joint_state_broadcaster_spawner,
+            on_exit=[arm_controller_spawner],
+        )
+    )
+
+
     return LaunchDescription([
         gazebo,
         node_robot_state_publisher,
         spawn_entity,
-        # start_joint_state_broadcaster,
-        # start_gimbal_controller,
+        start_joint_state_broadcaster,
+        start_gimbal_controller,
+        start_arm_controller
     ])
+
+# ros2 launch gimbal_mani gimbal_gazebo.launch.py
