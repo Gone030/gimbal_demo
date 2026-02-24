@@ -9,6 +9,15 @@
     <xacro:property name="stl_scale" value="0.001 0.001 0.001"/>
     <xacro:property name="yaw_limit" value="3.1416"/>
     <xacro:property name="pitch_limit" value="1.5708"/>
+    <xacro:property name="default_mass" value="0.05"/>
+
+    <xacro:macro name="default_inertial" params="mass">
+        <inertial>
+            <mass value="${mass}"/>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <inertia ixx="1e-5" ixy="0" ixz="0" iyy="1e-5" iyz="0" izz="1e-5"/>
+        </inertial>
+    </xacro:macro>
 
     <!-- ===== root: arm에서 Fixed_Gripper에 붙을 링크 ===== -->
     <!-- <link name="gimbal_mount_link">
@@ -21,6 +30,7 @@
     </link> -->
 
     <link name="gimbal_base_link">
+        <xacro:default_inertial mass="${default_mass}"/>
         <visual>
             <origin xyz="-0.5 0.0 0.0225" rpy="0.0 0.0 0.0"/>
             <geometry>
@@ -36,6 +46,7 @@
     </joint> -->
 
     <link name="gimbal_yaw_servo_link">
+        <xacro:default_inertial mass="${default_mass}"/>
         <visual>
             <origin xyz="0.005 0.00 0.048" rpy="0 0 0"/>
             <geometry>
@@ -59,6 +70,7 @@
 
     <!-- ===== yaw stage ===== -->
     <link name="gimbal_yaw_link">
+        <xacro:default_inertial mass="${default_mass}"/>
         <visual>
             <origin xyz="-0.4965 -0.0188 0.05" rpy="0 0 0"/>
             <geometry>
@@ -75,6 +87,7 @@
 
 
     <link name="gimbal_pitch_servo_link">
+        <xacro:default_inertial mass="${default_mass}"/>
         <visual>
             <origin xyz="0.0 -0.000 0.01" rpy="1.5708 1.5708 0"/>
             <geometry>
@@ -97,6 +110,7 @@
 
     <!-- ===== pitch stage ===== -->
     <link name="gimbal_pitch_link">
+        <xacro:default_inertial mass="${default_mass}"/>
         <visual>
             <origin xyz="-0.539 -0.018 -0.0335" rpy="0 0 0"/>
             <geometry>
@@ -115,7 +129,9 @@
     </joint>
 
     <!-- ===== camera stage ===== -->
-    <link name="gimbal_camera_link"/>
+    <link name="gimbal_camera_link">
+        <xacro:default_inertial mass="0.02"/>
+    </link>
 
     <joint name="gimbal_camera_joint" type="fixed">
         <parent link="gimbal_pitch_link"/>

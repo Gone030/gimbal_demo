@@ -16,8 +16,7 @@
     <origin xyz="0 0 0" rpy="0 0 0"/>
   </joint> -->
 
-  <link
-    name="base_link">
+  <link name="base_link">
     <gazebo>
       <material>Gazebo/Grey</material>
     </gazebo>
@@ -28,8 +27,7 @@
     <child link="Base"/>
     <origin xyz="0 0 0" rpy="0 0 0"/>
   </joint>
-  <link
-    name="Base">
+  <link name="Base">
     <inertial>
       <origin
         xyz="-2.45960666746703E-07 0.0311418169687909 0.0175746661003382"
