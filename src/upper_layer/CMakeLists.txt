@@ -8,7 +8,6 @@ ament_target_dependencies(arm_upper_layer_main
   std_msgs
   geometry_msgs
   trajectory_msgs
-  gimbal_mani
 )
 
 ament_target_dependencies(gimbal_upper_layer_main
@@ -16,7 +15,6 @@ ament_target_dependencies(gimbal_upper_layer_main
   std_msgs
   geometry_msgs
   trajectory_msgs
-  gimbal_mani
 )
 
 ament_target_dependencies(vision_node
@@ -24,13 +22,11 @@ ament_target_dependencies(vision_node
   sensor_msgs
   std_msgs
   cv_bridge
-  gimbal_mani
 )
 
 ament_target_dependencies(teleop_node
   rclcpp
   std_msgs
-  gimbal_mani
 )
 
 target_include_directories(arm_upper_layer_main
