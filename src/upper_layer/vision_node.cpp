@@ -37,7 +37,7 @@ public:
             { on_tof_scan(msg); });
 
         command_sub_ = create_subscription<std_msgs::msg::String>(
-            "/tracker/command", 10,
+            "/gimbal/tracker", 10,
             [this](const std_msgs::msg::String &msg)
             {
                 target_color_ = msg.data;

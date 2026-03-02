@@ -33,7 +33,7 @@ public:
             });
 
         tbr_sub_ = create_subscription<gimbal_mani::msg::TargetBearingRange>(
-            "/gimbal_manual", 10,
+            "/target", 10,
             [this](const gimbal_mani::msg::TargetBearingRange &msg)
             {
                 vision_yaw_ = msg.yaw;
