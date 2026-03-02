@@ -61,7 +61,6 @@ private:
         // allowed_joints 미지정이면 그대로 패스
         if (allowed_joints_.empty()){
             auto out = *msg;
-            out.header.stamp = this->now();
             pub_->publish(out);
             return;
         }
@@ -86,7 +85,6 @@ private:
 
         trajectory_msgs::msg::JointTrajectory out;
         out.header = msg->header;
-        out.header.stamp = this->now();
 
         // reorder_to_allowed이면 allowed_joints 순서로 내보냄
         // 그렇지 않으면 입력 순서를 유지하되 allowed에 포함된 것만 남김
