@@ -4,6 +4,7 @@
 #include <sensor_msgs/image_encodings.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
+#include <sensor_msgs/msg/laser_scan.hpp>
 
 #include <opencv2/opencv.hpp>
 #include "gimbal_mani/msg/target_bearing_range.hpp"
@@ -29,6 +30,11 @@ public:
         // ---- pub
         tbr_pub_ = create_publisher<gimbal_mani::msg::TargetBearingRange>(
             "/target", 10);
+
+        tof_sub_ = create_subscription<sensor_msgs::msg::LaserScan>(
+            "/gimbal/tof_distance", 10,
+            [this](const sensor_msgs::msg::LaserScan &msg)
+            { on_tof_scan(msg); });
 
         command_sub_ = create_subscription<std_msgs::msg::String>(
             "/tracker/command", 10,
@@ -121,8 +127,25 @@ private:
 
         if (error_x != 0 || error_y != 0)
         {
-            publish_target(dyaw, dpitch, 0.0, 0.0);
+            publish_target(dyaw, dpitch, tof_range_m_, 0.0);
         }
+    }
+
+    void on_tof_scan(const sensor_msgs::msg::LaserScan &msg)
+    {
+        if (msg.ranges.empty())
+            return;
+
+        const float r0 = msg.ranges[0];
+        if (!std::isfinite(r0))
+            return;
+
+        if (std::isfinite(msg.range_min) && r0 < msg.range_min)
+            return;
+        if (std::isfinite(msg.range_max) && r0 > msg.range_max)
+            return;
+
+        tof_range_m_ = static_cast<double>(r0);
     }
 
     void start_real_capture()
@@ -179,12 +202,15 @@ private:
     std::string target_color_ = "NONE";
     double current_yaw_ = 0.0;
     double current_pitch_ = 0.0;
+    double tof_range_m_ = std::numeric_limits<double>::quiet_NaN();
+
 
     // ros
     rclcpp::Publisher<gimbal_mani::msg::TargetBearingRange>::SharedPtr tbr_pub_;
     rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr image_sub_;
     rclcpp::TimerBase::SharedPtr timer_;
     rclcpp::Subscription<std_msgs::msg::String>::SharedPtr command_sub_;
+    rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr tof_sub_;
 
     // real capture
     cv::VideoCapture cap_;

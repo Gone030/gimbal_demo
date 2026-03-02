@@ -139,4 +139,30 @@
         <origin xyz="0 0 0" rpy="0 0 0"/>
     </joint>
 
+    <link name="tof_link">
+        <inertial>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <mass value="0.01"/>
+            <inertia ixx="1e-6" ixy="0" ixz="0"
+                     iyy="1e-6" iyz="0"
+                     izz="1e-6"/>
+        </inertial>
+
+        <visual>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <box size="0.02 0.02 0.01"/>
+            </geometry>
+            <material name="tof_visual">
+                <color rgba="0.1 0.8 0.1 1.0"/>
+            </material>
+        </visual>
+    </link>
+
+    <joint name="tof_joint" type="fixed">
+        <parent link="gimbal_camera_link"/>
+        <child link="tof_link"/>
+        <origin xyz="0.025 0.0 -0.023" rpy="0 0 0"/>
+    </joint>
+
 </robot>
