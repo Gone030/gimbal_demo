@@ -19,7 +19,7 @@ public:
         input_mode_ = declare_parameter<std::string>("input_mode", "sim");
 
         // sim image topic name
-        sim_image_topic_ = declare_parameter<std::string>("sim_image_topic", "/gimbal/image_raw");
+        sim_image_topic_ = declare_parameter<std::string>("sim_image_topic", "/gimbal/camera/image_raw");
 
         // real device
         device_ = declare_parameter<std::string>("device", "/dev/video0");
@@ -47,9 +47,10 @@ public:
         if (input_mode_ == "sim")
         {
             image_sub_ = create_subscription<sensor_msgs::msg::Image>(
-                sim_image_topic_, 10,
+                sim_image_topic_, rclcpp::SensorDataQoS(),
                 [this](const sensor_msgs::msg::Image &msg)
                 { on_sim_image(msg); });
+            RCLCPP_INFO(get_logger(), "VISION_SIM ACTIVATE");
         }
         else if (input_mode_ == "real")
         {
@@ -125,10 +126,7 @@ private:
         const double dyaw = (error_x * gain_yaw);
         const double dpitch = -(error_y * gain_pitch);
 
-        if (error_x != 0 || error_y != 0)
-        {
-            publish_target(dyaw, dpitch, tof_range_m_, 0.0);
-        }
+        publish_target(dyaw, dpitch, tof_range_m_, 0.0);
     }
 
     void on_tof_scan(const sensor_msgs::msg::LaserScan &msg)
