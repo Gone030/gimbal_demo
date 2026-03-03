@@ -29,10 +29,10 @@ public:
 
         // ---- pub
         tbr_pub_ = create_publisher<gimbal_mani::msg::TargetBearingRange>(
-            "/target", 10);
+            "/target", 10); //!TODO : Yaw, Pitch 를 dyaw, dpitch가 아닌 절대각으로 변경해야함.
 
         tof_sub_ = create_subscription<sensor_msgs::msg::LaserScan>(
-            "/gimbal/tof_distance", 10,
+            "/gimbal/tof_distance", 10, //!TODO : 실제로 값이 측정되지 않고있음
             [this](const sensor_msgs::msg::LaserScan &msg)
             { on_tof_scan(msg); });
 
