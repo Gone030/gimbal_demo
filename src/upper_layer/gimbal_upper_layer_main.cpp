@@ -36,8 +36,9 @@ public:
             "/target", 10,
             [this](const gimbal_mani::msg::TargetBearingRange &msg)
             {
-                vision_yaw_ = msg.yaw;
-                vision_pitch_ = msg.pitch;
+                vision_dyaw_ = msg.yaw;
+                vision_dpitch_ = msg.pitch;
+                has_new_vision_delta_ = true;
             });
 
         timer_ = create_wall_timer(
@@ -56,20 +57,22 @@ private:
     {
         const bool manual = is_manual_mode();
 
-        double goal_yaw = 0.0;
-        double goal_pitch = 0.0;
-
         if (manual)
         {
-            goal_yaw = manual_yaw_;
-            goal_pitch = manual_pitch_;
+            commanded_yaw_ = manual_yaw_;
+            commanded_pitch_ = manual_pitch_;
+            has_new_vision_delta_ = false;
         }
         else
         {
-            goal_yaw += vision_yaw_;
-            goal_pitch += vision_pitch_;
+            if (has_new_vision_delta_)
+            {
+                commanded_yaw_ += vision_dyaw_;
+                commanded_pitch_ += vision_dpitch_;
+                has_new_vision_delta_ = false;
+            }
         }
-        publish_traj(goal_yaw, goal_pitch);
+        publish_traj(commanded_yaw_, commanded_pitch_);
     }
 
     void publish_traj(double yaw, double pitch)
@@ -90,11 +93,14 @@ private:
     }
 
     std::string tracker_cmd_ = "NONE";
-    double vision_yaw_ = 0.0;
-    double vision_pitch_ = 0.0;
+    double vision_dyaw_ = 0.0;
+    double vision_dpitch_ = 0.0;
+    bool has_new_vision_delta_ = false;
 
     double manual_yaw_ = 0.0;
     double manual_pitch_ = 0.0;
+    double commanded_yaw_ = 0.0;
+    double commanded_pitch_ = 0.0;
 
     rclcpp::Publisher<trajectory_msgs::msg::JointTrajectory>::SharedPtr traj_pub_;
     rclcpp::Subscription<std_msgs::msg::String>::SharedPtr tracker_cmd_sub_;
