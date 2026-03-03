@@ -153,7 +153,7 @@
             </plugin>
         </sensor>
     </gazebo>
-    <gazebo reference="gimbal_tof_link">
+    <gazebo reference="tof_link">
         <sensor name="tof_ray" type="ray">
             <always_on>true</always_on>
             <update_rate>30</update_rate>
