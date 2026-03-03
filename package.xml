@@ -29,6 +29,7 @@
   <exec_depend>rosidl_default_generators</exec_depend>
 
   <export>
+    <gazebo_ros gazebo_model_path="${prefix}/models"/>
     <build_type>ament_cmake</build_type>
   </export>
 </package>
