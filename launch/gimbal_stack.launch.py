@@ -8,6 +8,18 @@ import os
 
 def generate_launch_description():
 
+    vision = Node(
+        package="gimbal_mani",
+        executable="vision_node",
+        name="vision_node",
+        output="screen",
+        parameters=[
+            {"use_sim_time": True},
+            {"input_mode": "sim"},
+            {"sim_image_topic": "/gimbal/camera/image_raw"},
+        ],
+    )
+
     # Upper-layer: gimbal controller logic (sub: /target, pub: /joint_trajectory_in/gimbal)
     gimbal_upper = Node(
         package="gimbal_mani",
@@ -31,6 +43,7 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
+        vision,
         gimbal_upper,
         jt_bridge_gimbal,
     ])
