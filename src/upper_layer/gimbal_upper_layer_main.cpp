@@ -36,9 +36,9 @@ public:
             "/target", 10,
             [this](const gimbal_mani::msg::TargetBearingRange &msg)
             {
-                vision_dyaw_ = msg.yaw;
-                vision_dpitch_ = msg.pitch;
-                has_new_vision_delta_ = true;
+                vision_yaw_cmd_ = msg.yaw;
+                vision_pitch_cmd_ = msg.pitch;
+                has_new_vision_cmd_ = true;
             });
 
         timer_ = create_wall_timer(
@@ -61,15 +61,15 @@ private:
         {
             commanded_yaw_ = manual_yaw_;
             commanded_pitch_ = manual_pitch_;
-            has_new_vision_delta_ = false;
+            has_new_vision_cmd_ = false;
         }
         else
         {
-            if (has_new_vision_delta_)
+            if (has_new_vision_cmd_)
             {
-                commanded_yaw_ += vision_dyaw_;
-                commanded_pitch_ += vision_dpitch_;
-                has_new_vision_delta_ = false;
+                commanded_yaw_ = vision_yaw_cmd_;
+                commanded_pitch_ = vision_pitch_cmd_;
+                has_new_vision_cmd_ = false;
             }
         }
         publish_traj(commanded_yaw_, commanded_pitch_);
@@ -93,9 +93,9 @@ private:
     }
 
     std::string tracker_cmd_ = "NONE";
-    double vision_dyaw_ = 0.0;
-    double vision_dpitch_ = 0.0;
-    bool has_new_vision_delta_ = false;
+    double vision_yaw_cmd_ = 0.0;
+    double vision_pitch_cmd_ = 0.0;
+    bool has_new_vision_cmd_ = false;
 
     double manual_yaw_ = 0.0;
     double manual_pitch_ = 0.0;
