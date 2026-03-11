@@ -3,11 +3,11 @@
 #include <cv_bridge/cv_bridge.h>
 #include <sensor_msgs/image_encodings.hpp>
 #include <std_msgs/msg/string.hpp>
-#include <sensor_msgs/msg/joint_state.hpp>
 #include <sensor_msgs/msg/laser_scan.hpp>
 
 #include <opencv2/opencv.hpp>
 #include "gimbal_mani/msg/target_bearing_range.hpp"
+#include "gimbal_mani/msg/gimbal_manual_cmd.hpp"
 
 class VisionNode : public rclcpp::Node
 {
@@ -29,10 +29,10 @@ public:
 
         // ---- pub
         tbr_pub_ = create_publisher<gimbal_mani::msg::TargetBearingRange>(
-            "/target", 10); //!TODO : Yaw, Pitch 를 dyaw, dpitch가 아닌 절대각으로 변경해야함.
+            "/target", 10);
 
         tof_sub_ = create_subscription<sensor_msgs::msg::LaserScan>(
-            "/gimbal/tof_distance", 10, //!TODO : 실제로 값이 측정되지 않고있음
+            "/gimbal/tof_distance", rclcpp::SensorDataQoS(),
             [this](const sensor_msgs::msg::LaserScan &msg)
             { on_tof_scan(msg); });
 
@@ -41,6 +41,17 @@ public:
             [this](const std_msgs::msg::String &msg)
             {
                 target_color_ = msg.data;
+            });
+
+        manual_cmd_sub_ = create_subscription<gimbal_mani::msg::GimbalManualCmd>(
+            "/gimbal/manual", 10,
+            [this](const gimbal_mani::msg::GimbalManualCmd &msg)
+            {
+                if (target_color_ == "NONE")
+                {
+                    yaw_cmd_ = msg.yaw;
+                    pitch_cmd_ = msg.pitch;
+                }
             });
 
         // ---- mode select
@@ -123,10 +134,10 @@ private:
         const double gain_yaw = 0.0005;
         const double gain_pitch = 0.00025;
 
-        const double dyaw = (error_x * gain_yaw);
-        const double dpitch = -(error_y * gain_pitch);
+        yaw_cmd_ += (error_x * gain_yaw);
+        pitch_cmd_ += -(error_y * gain_pitch);
 
-        publish_target(dyaw, dpitch, tof_range_m_, 0.0);
+        publish_target(yaw_cmd_, pitch_cmd_, tof_range_m_, 0.0);
     }
 
     void on_tof_scan(const sensor_msgs::msg::LaserScan &msg)
@@ -198,8 +209,8 @@ private:
     double fps_ = 30.0;
 
     std::string target_color_ = "NONE";
-    double current_yaw_ = 0.0;
-    double current_pitch_ = 0.0;
+    double yaw_cmd_ = 0.0;
+    double pitch_cmd_ = 0.0;
     double tof_range_m_ = std::numeric_limits<double>::quiet_NaN();
 
 
@@ -209,6 +220,7 @@ private:
     rclcpp::TimerBase::SharedPtr timer_;
     rclcpp::Subscription<std_msgs::msg::String>::SharedPtr command_sub_;
     rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr tof_sub_;
+    rclcpp::Subscription<gimbal_mani::msg::GimbalManualCmd>::SharedPtr manual_cmd_sub_;
 
     // real capture
     cv::VideoCapture cap_;
