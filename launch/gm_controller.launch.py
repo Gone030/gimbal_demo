@@ -123,6 +123,18 @@ def generate_launch_description():
         )
     )
 
+    vision = Node(
+        package="gimbal_mani",
+        executable="vision_node",
+        name="vision_node",
+        output="screen",
+        parameters=[
+            {"use_sim_time": True},
+            {"input_mode": "sim"},
+            {"sim_image_topic": "/gimbal/camera/image_raw"},
+        ],
+    )
+
 
     return LaunchDescription([
         gazebo,
@@ -130,7 +142,8 @@ def generate_launch_description():
         spawn_entity,
         start_joint_state_broadcaster,
         start_gimbal_controller,
-        start_arm_controller
+        start_arm_controller,
+        vision
     ])
 
 # ros2 launch gimbal_mani gimbal_gazebo.launch.py
