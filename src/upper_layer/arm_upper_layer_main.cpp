@@ -8,6 +8,8 @@
 #include <geometry_msgs/msg/point.hpp>
 #include <trajectory_msgs/msg/joint_trajectory.hpp>
 #include <trajectory_msgs/msg/joint_trajectory_point.hpp>
+#include <std_msgs/msg/bool.hpp>
+#include <std_msgs/msg/empty.hpp>
 
 #include "gimbal_mani/ik_2link_2d.hpp"
 #include "gimbal_mani/msg/target_bearing_range.hpp"
@@ -17,8 +19,8 @@ class Arm_UpperLayerMain : public rclcpp::Node
 public:
     Arm_UpperLayerMain() : Node("arm_upper_layer_main")
     {
-        L1_ = this->declare_parameter<double>("L1", 0.175); // 실제 길이에 맞게 수정해야함
-        L2_ = this->declare_parameter<double>("L2", 0.1);
+        L1_ = this->declare_parameter<double>("L1", 0.116); // 실제 길이에 맞게 수정해야함
+        L2_ = this->declare_parameter<double>("L2", 0.135);
 
         saturate_reach_ = this->declare_parameter<bool>("saturate_reach", true);
 
@@ -30,6 +32,7 @@ public:
             "Wrist_Roll",
             "Gripper"};
         goal_.assign(joint_name_.size(), 0.0);
+        home_goal_ = {0.0, -1.4, 1.4, -1.0, 0.0, 0.5};
 
         pub_arm_traj_ = this->create_publisher<trajectory_msgs::msg::JointTrajectory>(
             "/joint_trajectory_in/arm", 10);
@@ -37,6 +40,14 @@ public:
         sub_target_ = this->create_subscription<gimbal_mani::msg::TargetBearingRange>(
             "/target", 10,
             std::bind(&Arm_UpperLayerMain::on_target, this, std::placeholders::_1));
+
+        sub_home_ = this->create_subscription<std_msgs::msg::Empty>(
+            "/arm/home", 10,
+            std::bind(&Arm_UpperLayerMain::on_home, this, std::placeholders::_1));
+
+        sub_auto_enable_ = this->create_subscription<std_msgs::msg::Bool>(
+            "/arm/auto_enable", 10,
+            std::bind(&Arm_UpperLayerMain::on_auto_enable, this, std::placeholders::_1));
 
         const double publish_hz = this->declare_parameter<double>("pub_hz", 50.0);
         const auto period = std::chrono::duration<double>(1.0 / std::max(1.0, publish_hz));
@@ -59,14 +70,25 @@ private:
 
         trajectory_msgs::msg::JointTrajectoryPoint p;
         p.positions = goal_;
-        p.time_from_start = rclcpp::Duration::from_seconds(0.1);
+        p.time_from_start = rclcpp::Duration::from_seconds(command_time_from_start_sec_);
 
         traj.points.push_back(p);
         pub_arm_traj_->publish(traj);
+
+        if (single_shot_command_)
+        {
+            single_shot_command_ = false;
+            target_valid_ = false;
+        }
     }
 
     void on_target(const gimbal_mani::msg::TargetBearingRange &msg)
     {
+        if (!auto_enabled_)
+        {
+            return;
+        }
+
         if (!std::isfinite(msg.yaw) || !std::isfinite(msg.pitch) || !std::isfinite(msg.range) || msg.range <= 0.0)
         {
             target_valid_ = false;
@@ -130,7 +152,7 @@ private:
 
         auto cost = [&](double a1, double a2)
         {
-            return std::fabs(wrap_pi(a1 - prev_shoulder_pitch) + std::fabs(wrap_pi(a2 - prev_elbow)));
+            return std::fabs(wrap_pi(a1 - prev_shoulder_pitch)) + std::fabs(wrap_pi(a2 - prev_elbow));
         };
 
         double shoulder_pitch_sel = 0.0, elbow_sel = 0.0;
@@ -166,19 +188,43 @@ private:
 
         goal_[4] = wrap_pi(msg.object_yaw); // temp, 비전, 프레임 정책에 따라 바뀔 수 있음
 
+        command_time_from_start_sec_ = 1.0;
+        single_shot_command_ = false;
         target_valid_ = true;
+    }
+
+    void on_home(const std_msgs::msg::Empty &)
+    {
+        auto_enabled_ = false;
+        goal_ = home_goal_;
+        command_time_from_start_sec_ = 2.0;
+        single_shot_command_ = true;
+        target_valid_ = true;
+        RCLCPP_WARN(this->get_logger(), "Arm moving to home pose slowly. Auto tracking disabled.");
+    }
+
+    void on_auto_enable(const std_msgs::msg::Bool &msg)
+    {
+        auto_enabled_ = msg.data;
+        RCLCPP_INFO(this->get_logger(), "Arm auto tracking %s.", auto_enabled_ ? "enabled" : "disabled");
     }
 
 private:
     double L1_{0.175}, L2_{0.1};
     bool saturate_reach_{true};
     bool target_valid_{false};
+    bool auto_enabled_{true};
+    bool single_shot_command_{false};
+    double command_time_from_start_sec_{0.1};
 
     std::vector<std::string> joint_name_;
     std::vector<double> goal_;
+    std::vector<double> home_goal_;
 
     rclcpp::Publisher<trajectory_msgs::msg::JointTrajectory>::SharedPtr pub_arm_traj_;
     rclcpp::Subscription<gimbal_mani::msg::TargetBearingRange>::SharedPtr sub_target_;
+    rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr sub_home_;
+    rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr sub_auto_enable_;
     rclcpp::TimerBase::SharedPtr timer_;
 };
 
