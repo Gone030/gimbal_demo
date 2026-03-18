@@ -6,10 +6,18 @@
 
 #include <rclcpp/rclcpp.hpp>
 #include <geometry_msgs/msg/point.hpp>
+#include <geometry_msgs/msg/point_stamped.hpp>
+#include <geometry_msgs/msg/transform_stamped.hpp>
+#include <sensor_msgs/msg/joint_state.hpp>
 #include <trajectory_msgs/msg/joint_trajectory.hpp>
 #include <trajectory_msgs/msg/joint_trajectory_point.hpp>
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/empty.hpp>
+#include <rcl_interfaces/msg/set_parameters_result.hpp>
+#include <tf2/exceptions.h>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
+#include <tf2_ros/buffer.h>
+#include <tf2_ros/transform_listener.h>
 
 #include "gimbal_mani/ik_2link_2d.hpp"
 #include "gimbal_mani/msg/target_bearing_range.hpp"
@@ -23,6 +31,11 @@ public:
         L2_ = this->declare_parameter<double>("L2", 0.135);
 
         saturate_reach_ = this->declare_parameter<bool>("saturate_reach", true);
+        arm_base_frame_ = this->declare_parameter<std::string>("arm_base_frame", "Base");
+        shoulder_pivot_x_ = this->declare_parameter<double>("shoulder_pivot_x", 0.0);
+        shoulder_pivot_y_ = this->declare_parameter<double>("shoulder_pivot_y", -0.0452);
+        target_single_shot_mode_ = this->declare_parameter<bool>("target_single_shot_mode", true);
+        wrist_pitch_level_bias_ = this->declare_parameter<double>("wrist_pitch_level_bias", -1.5);
 
         joint_name_ = {
             "Shoulder_Rotation",
@@ -49,6 +62,15 @@ public:
             "/arm/auto_enable", 10,
             std::bind(&Arm_UpperLayerMain::on_auto_enable, this, std::placeholders::_1));
 
+        sub_joint_state_ = this->create_subscription<sensor_msgs::msg::JointState>(
+            "/joint_states", rclcpp::SensorDataQoS(),
+            std::bind(&Arm_UpperLayerMain::on_joint_state, this, std::placeholders::_1));
+
+        tf_buffer_ = std::make_unique<tf2_ros::Buffer>(this->get_clock());
+        tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
+        param_cb_handle_ = this->add_on_set_parameters_callback(
+            std::bind(&Arm_UpperLayerMain::on_parameters_changed, this, std::placeholders::_1));
+
         const double publish_hz = this->declare_parameter<double>("pub_hz", 50.0);
         const auto period = std::chrono::duration<double>(1.0 / std::max(1.0, publish_hz));
         timer_ = this->create_wall_timer(
@@ -59,6 +81,12 @@ public:
 private:
     void on_timer()
     {
+        if (recompute_requested_ && auto_enabled_ && has_last_target_)
+        {
+            recompute_requested_ = false;
+            on_target(last_target_msg_);
+        }
+
         if (!target_valid_)
         {
             return;
@@ -88,6 +116,14 @@ private:
         {
             return;
         }
+        if (!has_joint_state_)
+        {
+            RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+                                 "Waiting for /joint_states before closed-loop IK update.");
+            return;
+        }
+        has_last_target_ = true;
+        last_target_msg_ = msg;
 
         if (!std::isfinite(msg.yaw) || !std::isfinite(msg.pitch) || !std::isfinite(msg.range) || msg.range <= 0.0)
         {
@@ -95,21 +131,24 @@ private:
             return;
         }
 
-        const double cy = std::cos(msg.yaw);
-        const double sy = std::sin(msg.yaw);
-        const double cp = std::cos(msg.pitch);
-        const double sp = std::sin(msg.pitch);
-        const double r = msg.range;
+        double x = 0.0;
+        double y = 0.0;
+        double z = 0.0;
+        if (!target_to_arm_base_point(msg, x, y, z))
+        {
+            target_valid_ = false;
+            return;
+        }
 
-        const double x = r * cp * cy;
-        const double y = r * cp * sy;
-        const double z = r * sp;
+        // Use /target yaw directly as shoulder yaw command (mount-frame bearing policy).
+        const double psi = nearest_equivalent_angle(msg.yaw, q_meas_[0]);
 
-        // yaw(Sholder_Rotation)
-        const double psi = std::atan2(y, x);
+        // Keep x_rel/y_rel for planar IK projection.
+        const double x_rel = x - shoulder_pivot_x_;
+        const double y_rel = y - shoulder_pivot_y_;
 
-        // 2D 평면화 : (rho, z)
-        double rho = std::sqrt(x * x + y * y);
+        // 2D 평면화 : (rho, z) on shoulder pivot frame
+        double rho = std::sqrt(x_rel * x_rel + y_rel * y_rel);
 
         double z2 = z;
         if (saturate_reach_)
@@ -147,49 +186,65 @@ private:
             return;
         }
 
-        const double prev_shoulder_pitch = goal_[1];
-        const double prev_elbow = goal_[2];
+        const double prev_shoulder_pitch = q_meas_[1];
+        const double prev_elbow = q_meas_[2];
+
+        const double shoulder_pitch_up = nearest_equivalent_angle(th1_up, prev_shoulder_pitch);
+        const double elbow_up = nearest_equivalent_angle(th2_up, prev_elbow);
+        const double shoulder_pitch_dn = nearest_equivalent_angle(th1_dn, prev_shoulder_pitch);
+        const double elbow_dn = nearest_equivalent_angle(th2_dn, prev_elbow);
 
         auto cost = [&](double a1, double a2)
         {
-            return std::fabs(wrap_pi(a1 - prev_shoulder_pitch)) + std::fabs(wrap_pi(a2 - prev_elbow));
+            return std::fabs(a1 - prev_shoulder_pitch) + std::fabs(a2 - prev_elbow);
         };
 
         double shoulder_pitch_sel = 0.0, elbow_sel = 0.0;
         if (ok_up && !ok_dn)
         {
-            shoulder_pitch_sel = th1_up;
-            elbow_sel = th2_up;
+            shoulder_pitch_sel = shoulder_pitch_up;
+            elbow_sel = elbow_up;
         }
         else if (!ok_up && ok_dn)
         {
-            shoulder_pitch_sel = th1_dn;
-            elbow_sel = th2_dn;
+            shoulder_pitch_sel = shoulder_pitch_dn;
+            elbow_sel = elbow_dn;
         }
         else
         {
-            if (cost(th1_up, th2_up) <= cost(th1_dn, th2_dn))
+            if (cost(shoulder_pitch_up, elbow_up) <= cost(shoulder_pitch_dn, elbow_dn))
             {
-                shoulder_pitch_sel = th1_up;
-                elbow_sel = th2_up;
+                shoulder_pitch_sel = shoulder_pitch_up;
+                elbow_sel = elbow_up;
             }
             else
             {
-                shoulder_pitch_sel = th1_dn;
-                elbow_sel = th2_dn;
+                shoulder_pitch_sel = shoulder_pitch_dn;
+                elbow_sel = elbow_dn;
             }
         }
 
-        goal_[0] = wrap_pi(psi);
+        goal_[0] = psi;
         goal_[1] = shoulder_pitch_sel;
         goal_[2] = elbow_sel;
 
-        goal_[3] = wrap_pi(-(goal_[1] + goal_[2]));
+        // Keep wrist pitch axis roughly horizontal with a fixed bias (URDF zero policy).
+        const double wrist_pitch_raw = -(goal_[1] + goal_[2]) + wrist_pitch_level_bias_;
+        goal_[3] = nearest_equivalent_angle(wrist_pitch_raw, q_meas_[3]);
 
-        goal_[4] = wrap_pi(msg.object_yaw); // temp, 비전, 프레임 정책에 따라 바뀔 수 있음
+        goal_[4] = nearest_equivalent_angle(msg.object_yaw, q_meas_[4]); // temp, 비전, 프레임 정책에 따라 바뀔 수 있음
 
         command_time_from_start_sec_ = 1.0;
-        single_shot_command_ = false;
+        if (target_single_shot_mode_)
+        {
+            single_shot_command_ = true;
+            auto_enabled_ = false;
+            RCLCPP_WARN(this->get_logger(), "Target latched once. Auto tracking disabled.");
+        }
+        else
+        {
+            single_shot_command_ = false;
+        }
         target_valid_ = true;
     }
 
@@ -209,23 +264,172 @@ private:
         RCLCPP_INFO(this->get_logger(), "Arm auto tracking %s.", auto_enabled_ ? "enabled" : "disabled");
     }
 
+    void on_joint_state(const sensor_msgs::msg::JointState &msg)
+    {
+        if (msg.name.size() != msg.position.size())
+        {
+            return;
+        }
+
+        auto update = [&](const char *joint_name, size_t idx)
+        {
+            for (size_t i = 0; i < msg.name.size(); ++i)
+            {
+                if (msg.name[i] == joint_name)
+                {
+                    q_meas_[idx] = msg.position[i];
+                    return true;
+                }
+            }
+            return false;
+        };
+
+        const bool ok =
+            update("Shoulder_Rotation", 0) &&
+            update("Shoulder_Pitch", 1) &&
+            update("Elbow", 2) &&
+            update("Wrist_Pitch", 3) &&
+            update("Wrist_Roll", 4) &&
+            update("Gripper", 5);
+
+        if (ok)
+        {
+            has_joint_state_ = true;
+        }
+    }
+
+    bool target_to_arm_base_point(const gimbal_mani::msg::TargetBearingRange &msg,
+                                  double &x_out, double &y_out, double &z_out)
+    {
+        if (msg.header.frame_id.empty())
+        {
+            RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+                                 "Dropping target: header.frame_id is empty.");
+            return false;
+        }
+
+        const double cp = std::cos(msg.pitch);
+        const geometry_msgs::msg::PointStamped p_sensor = [&]()
+        {
+            geometry_msgs::msg::PointStamped p;
+            p.header = msg.header;
+            p.point.x = msg.range * cp * std::cos(msg.yaw);
+            p.point.y = msg.range * cp * std::sin(msg.yaw);
+            p.point.z = msg.range * std::sin(msg.pitch);
+            return p;
+        }();
+
+        geometry_msgs::msg::PointStamped p_base;
+        try
+        {
+            const auto tf = tf_buffer_->lookupTransform(
+                arm_base_frame_, msg.header.frame_id, tf2::TimePointZero);
+            tf2::doTransform(p_sensor, p_base, tf);
+        }
+        catch (const tf2::TransformException &ex)
+        {
+            RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+                                 "TF failed (%s -> %s): %s",
+                                 msg.header.frame_id.c_str(), arm_base_frame_.c_str(), ex.what());
+            return false;
+        }
+
+        x_out = p_base.point.x;
+        y_out = p_base.point.y;
+        z_out = p_base.point.z;
+        return true;
+    }
+
+    static double nearest_equivalent_angle(double target, double reference)
+    {
+        // choose target + 2k*pi that is closest to the previous command
+        return reference + wrap_pi(target - reference);
+    }
+
+    rcl_interfaces::msg::SetParametersResult on_parameters_changed(const std::vector<rclcpp::Parameter> &params)
+    {
+        rcl_interfaces::msg::SetParametersResult result;
+        result.successful = true;
+        result.reason = "ok";
+
+        for (const auto &p : params)
+        {
+            const auto &name = p.get_name();
+            if (name == "L1")
+            {
+                L1_ = p.as_double();
+            }
+            else if (name == "L2")
+            {
+                L2_ = p.as_double();
+            }
+            else if (name == "saturate_reach")
+            {
+                saturate_reach_ = p.as_bool();
+            }
+            else if (name == "arm_base_frame")
+            {
+                arm_base_frame_ = p.as_string();
+            }
+            else if (name == "shoulder_pivot_x")
+            {
+                shoulder_pivot_x_ = p.as_double();
+            }
+            else if (name == "shoulder_pivot_y")
+            {
+                shoulder_pivot_y_ = p.as_double();
+            }
+            else if (name == "target_single_shot_mode")
+            {
+                target_single_shot_mode_ = p.as_bool();
+            }
+            else if (name == "wrist_pitch_level_bias")
+            {
+                wrist_pitch_level_bias_ = p.as_double();
+            }
+            else if (name == "pub_hz")
+            {
+                // runtime change not applied to existing timer period in this implementation
+            }
+        }
+        if (result.successful)
+        {
+            recompute_requested_ = true;
+        }
+        return result;
+    }
+
 private:
-    double L1_{0.175}, L2_{0.1};
+    double L1_{0.116}, L2_{0.135};
     bool saturate_reach_{true};
     bool target_valid_{false};
     bool auto_enabled_{true};
     bool single_shot_command_{false};
     double command_time_from_start_sec_{0.1};
+    std::string arm_base_frame_{"Base"};
+    double shoulder_pivot_x_{0.0};
+    double shoulder_pivot_y_{-0.0452};
+    bool target_single_shot_mode_{true};
+    double wrist_pitch_level_bias_{-1.5};
 
     std::vector<std::string> joint_name_;
     std::vector<double> goal_;
     std::vector<double> home_goal_;
+    std::vector<double> q_meas_{std::vector<double>(6, 0.0)};
+    bool has_joint_state_{false};
+    gimbal_mani::msg::TargetBearingRange last_target_msg_;
+    bool has_last_target_{false};
+    bool recompute_requested_{false};
 
     rclcpp::Publisher<trajectory_msgs::msg::JointTrajectory>::SharedPtr pub_arm_traj_;
     rclcpp::Subscription<gimbal_mani::msg::TargetBearingRange>::SharedPtr sub_target_;
     rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr sub_home_;
     rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr sub_auto_enable_;
+    rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr sub_joint_state_;
     rclcpp::TimerBase::SharedPtr timer_;
+    std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
+    std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
+    rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr param_cb_handle_;
 };
 
 int main(int argc, char **argv)
