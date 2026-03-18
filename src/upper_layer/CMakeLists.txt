@@ -6,8 +6,12 @@ add_executable(teleop_node gimbal_teleop_node.cpp)
 ament_target_dependencies(arm_upper_layer_main
   rclcpp
   std_msgs
+  sensor_msgs
   geometry_msgs
   trajectory_msgs
+  tf2
+  tf2_ros
+  tf2_geometry_msgs
 )
 
 ament_target_dependencies(gimbal_upper_layer_main
