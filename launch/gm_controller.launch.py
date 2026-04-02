@@ -145,5 +145,3 @@ def generate_launch_description():
         start_arm_controller,
         vision
     ])
-
-# ros2 launch gimbal_mani gimbal_gazebo.launch.py
