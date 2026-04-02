@@ -32,10 +32,15 @@ public:
 
         saturate_reach_ = this->declare_parameter<bool>("saturate_reach", true);
         arm_base_frame_ = this->declare_parameter<std::string>("arm_base_frame", "Base");
-        shoulder_pivot_x_ = this->declare_parameter<double>("shoulder_pivot_x", 0.0);
-        shoulder_pivot_y_ = this->declare_parameter<double>("shoulder_pivot_y", -0.0452);
         target_single_shot_mode_ = this->declare_parameter<bool>("target_single_shot_mode", true);
         wrist_pitch_level_bias_ = this->declare_parameter<double>("wrist_pitch_level_bias", -1.5);
+
+        shoulder_rot_x_ = this->declare_parameter<double>("shoulder_rot_x", 0.0);
+        shoulder_rot_y_ = this->declare_parameter<double>("shoulder_rot_y", -0.0452);
+        shoulder_rot_z_ = this->declare_parameter<double>("shoulder_rot_z", 0.0165);
+
+        shoulder_pitch_offset_y_ = this->declare_parameter<double>("shoulder_pitch_offset_y", 0.1025);
+        shoulder_pitch_offset_z_ = this->declare_parameter<double>("shoulder_pitch_offset_z", 0.0306);
 
         joint_name_ = {
             "Shoulder_Rotation",
@@ -140,17 +145,27 @@ private:
             return;
         }
 
-        // Use /target yaw directly as shoulder yaw command (mount-frame bearing policy).
-        const double psi = nearest_equivalent_angle(msg.yaw, q_meas_[0]);
+        const double x_sr = x - shoulder_rot_x_;
+        const double y_sr = y - shoulder_rot_y_;
+        const double z_sr = z - shoulder_rot_z_;
 
-        // Keep x_rel/y_rel for planar IK projection.
-        const double x_rel = x - shoulder_pivot_x_;
-        const double y_rel = y - shoulder_pivot_y_;
+        // Shoulder_Rotation is not msg.yaw.
+        // It must be computed from the transformed target point around the real yaw axis.
+        // Frame convention fix: in this model, forward on yaw plane maps to -y.
+        const double psi_raw = std::atan2(x_sr, -y_sr);
+        const double psi = nearest_equivalent_angle(psi_raw, q_meas_[0]);
 
-        // 2D 평면화 : (rho, z) on shoulder pivot frame
-        double rho = std::sqrt(x_rel * x_rel + y_rel * y_rel);
+        const double c = std::cos(psi_raw);
+        const double s = std::sin(psi_raw);
 
-        double z2 = z;
+        // target in Shoulder_Rotation_Pitch frame (after desired yaw alignment)
+        const double x_plane = c * x_sr + s * y_sr;   // should be near 0
+        const double y_plane = z_sr;
+        const double z_plane = s * x_sr - c * y_sr;
+
+        // move origin from Shoulder_Rotation pivot to Shoulder_Pitch pivot
+        double rho = y_plane - shoulder_pitch_offset_y_;
+        double z2  = z_plane - shoulder_pitch_offset_z_;
         if (saturate_reach_)
         {
             const double rr = std::sqrt((rho * rho) + (z2 * z2));
@@ -189,9 +204,9 @@ private:
         const double prev_shoulder_pitch = q_meas_[1];
         const double prev_elbow = q_meas_[2];
 
-        const double shoulder_pitch_up = nearest_equivalent_angle(th1_up, prev_shoulder_pitch);
+        const double shoulder_pitch_up = nearest_equivalent_angle(-th1_up, prev_shoulder_pitch);
         const double elbow_up = nearest_equivalent_angle(th2_up, prev_elbow);
-        const double shoulder_pitch_dn = nearest_equivalent_angle(th1_dn, prev_shoulder_pitch);
+        const double shoulder_pitch_dn = nearest_equivalent_angle(-th1_dn, prev_shoulder_pitch);
         const double elbow_dn = nearest_equivalent_angle(th2_dn, prev_elbow);
 
         auto cost = [&](double a1, double a2)
@@ -322,8 +337,9 @@ private:
         geometry_msgs::msg::PointStamped p_base;
         try
         {
+            const rclcpp::Time tf_time(msg.header.stamp);
             const auto tf = tf_buffer_->lookupTransform(
-                arm_base_frame_, msg.header.frame_id, tf2::TimePointZero);
+                arm_base_frame_, msg.header.frame_id, tf_time, rclcpp::Duration::from_seconds(0.03));
             tf2::doTransform(p_sensor, p_base, tf);
         }
         catch (const tf2::TransformException &ex)
@@ -371,14 +387,6 @@ private:
             {
                 arm_base_frame_ = p.as_string();
             }
-            else if (name == "shoulder_pivot_x")
-            {
-                shoulder_pivot_x_ = p.as_double();
-            }
-            else if (name == "shoulder_pivot_y")
-            {
-                shoulder_pivot_y_ = p.as_double();
-            }
             else if (name == "target_single_shot_mode")
             {
                 target_single_shot_mode_ = p.as_bool();
@@ -407,8 +415,14 @@ private:
     bool single_shot_command_{false};
     double command_time_from_start_sec_{0.1};
     std::string arm_base_frame_{"Base"};
-    double shoulder_pivot_x_{0.0};
-    double shoulder_pivot_y_{-0.0452};
+
+    double shoulder_rot_x_{0.0};
+    double shoulder_rot_y_{-0.0452};
+    double shoulder_rot_z_{0.0165};
+
+    double shoulder_pitch_offset_y_{0.1025};
+    double shoulder_pitch_offset_z_{0.0306};
+
     bool target_single_shot_mode_{true};
     double wrist_pitch_level_bias_{-1.5};
 
