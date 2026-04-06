@@ -15,6 +15,8 @@
 #include <std_msgs/msg/empty.hpp>
 #include <rcl_interfaces/msg/set_parameters_result.hpp>
 #include <tf2/exceptions.h>
+#include <tf2/LinearMath/Matrix3x3.h>
+#include <tf2/LinearMath/Quaternion.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
@@ -34,6 +36,12 @@ public:
         arm_base_frame_ = this->declare_parameter<std::string>("arm_base_frame", "Base");
         target_single_shot_mode_ = this->declare_parameter<bool>("target_single_shot_mode", true);
         wrist_pitch_level_bias_ = this->declare_parameter<double>("wrist_pitch_level_bias", -1.5);
+        pre_grasp_standoff_ = this->declare_parameter<double>("pre_grasp_standoff", 0.0);
+        pre_grasp_lift_z_ = this->declare_parameter<double>("pre_grasp_lift_z", 0.01);
+        min_effective_range_ = this->declare_parameter<double>("min_effective_range", 0.02);
+        gripper_tool_length_ = this->declare_parameter<double>("gripper_tool_length", 0.0602);
+        target_lpf_alpha_ = this->declare_parameter<double>("target_lpf_alpha", 0.25);
+        retarget_deadband_m_ = this->declare_parameter<double>("retarget_deadband_m", 0.01);
 
         shoulder_rot_x_ = this->declare_parameter<double>("shoulder_rot_x", 0.0);
         shoulder_rot_y_ = this->declare_parameter<double>("shoulder_rot_y", -0.0452);
@@ -136,14 +144,72 @@ private:
             return;
         }
 
-        double x = 0.0;
-        double y = 0.0;
-        double z = 0.0;
-        if (!target_to_arm_base_point(msg, x, y, z))
+        double target_x = 0.0;
+        double target_y = 0.0;
+        double target_z = 0.0;
+        double ray_ux = 0.0;
+        double ray_uy = 0.0;
+        double ray_uz = 0.0;
+        if (!target_to_arm_base_point(msg, target_x, target_y, target_z, ray_ux, ray_uy, ray_uz))
         {
             target_valid_ = false;
             return;
         }
+
+        const double total_standoff = pre_grasp_standoff_ + gripper_tool_length_;
+        double x = target_x - total_standoff * ray_ux;
+        double y = target_y - total_standoff * ray_uy;
+        double z = target_z - total_standoff * ray_uz;
+        z -= pre_grasp_lift_z_;
+
+        // Retarget hysteresis: ignore tiny target motions to reduce hunting.
+        if (!has_last_raw_target_)
+        {
+            last_raw_x_ = x;
+            last_raw_y_ = y;
+            last_raw_z_ = z;
+            has_last_raw_target_ = true;
+        }
+        else
+        {
+            const double dx = x - last_raw_x_;
+            const double dy = y - last_raw_y_;
+            const double dz = z - last_raw_z_;
+            const double d = std::sqrt((dx * dx) + (dy * dy) + (dz * dz));
+            if (d >= retarget_deadband_m_)
+            {
+                last_raw_x_ = x;
+                last_raw_y_ = y;
+                last_raw_z_ = z;
+            }
+            else
+            {
+                x = last_raw_x_;
+                y = last_raw_y_;
+                z = last_raw_z_;
+            }
+        }
+
+        // Low-pass filter in arm base frame.
+        const double alpha = std::clamp(target_lpf_alpha_, 0.0, 1.0);
+        if (!has_filtered_target_)
+        {
+            filt_x_ = x;
+            filt_y_ = y;
+            filt_z_ = z;
+            has_filtered_target_ = true;
+        }
+        else
+        {
+            filt_x_ = alpha * x + (1.0 - alpha) * filt_x_;
+            filt_y_ = alpha * y + (1.0 - alpha) * filt_y_;
+            filt_z_ = alpha * z + (1.0 - alpha) * filt_z_;
+        }
+        x = filt_x_;
+        y = filt_y_;
+        z = filt_z_;
+
+        const double total_standoff_dbg = total_standoff;
 
         const double x_sr = x - shoulder_rot_x_;
         const double y_sr = y - shoulder_rot_y_;
@@ -164,8 +230,19 @@ private:
         const double z_plane = s * x_sr - c * y_sr;
 
         // move origin from Shoulder_Rotation pivot to Shoulder_Pitch pivot
-        double rho = y_plane - shoulder_pitch_offset_y_;
-        double z2  = z_plane - shoulder_pitch_offset_z_;
+        double rho = z_plane - shoulder_pitch_offset_y_;
+        double z2  = y_plane - shoulder_pitch_offset_z_;
+
+        RCLCPP_INFO_THROTTLE(
+            this->get_logger(), *this->get_clock(), 500,
+            "on_target: range=%.3f (standoff=%.3f tool=%.3f lift_z=%.3f min=%.3f total=%.3f) "
+            "target=(%.3f,%.3f,%.3f) ray=(%.3f,%.3f,%.3f) wrist=(%.3f,%.3f,%.3f) rho=%.3f z2=%.3f",
+            msg.range,
+            pre_grasp_standoff_, gripper_tool_length_, pre_grasp_lift_z_, min_effective_range_,
+            total_standoff_dbg,
+            target_x, target_y, target_z,
+            ray_ux, ray_uy, ray_uz,
+            x, y, z, rho, z2);
         if (saturate_reach_)
         {
             const double rr = std::sqrt((rho * rho) + (z2 * z2));
@@ -204,14 +281,17 @@ private:
         const double prev_shoulder_pitch = q_meas_[1];
         const double prev_elbow = q_meas_[2];
 
-        const double shoulder_pitch_up = nearest_equivalent_angle(-th1_up, prev_shoulder_pitch);
+        const double shoulder_pitch_up = nearest_equivalent_angle(th1_up, prev_shoulder_pitch);
         const double elbow_up = nearest_equivalent_angle(th2_up, prev_elbow);
-        const double shoulder_pitch_dn = nearest_equivalent_angle(-th1_dn, prev_shoulder_pitch);
+        const double shoulder_pitch_dn = nearest_equivalent_angle(th1_dn, prev_shoulder_pitch);
         const double elbow_dn = nearest_equivalent_angle(th2_dn, prev_elbow);
 
         auto cost = [&](double a1, double a2)
         {
-            return std::fabs(a1 - prev_shoulder_pitch) + std::fabs(a2 - prev_elbow);
+            const double w_sh = 0.7;   // shoulder 변화는 덜 벌점
+            const double w_el = 1.1;   // elbow 변화는 더 벌점
+            return w_sh * std::fabs(a1 - prev_shoulder_pitch) +
+                w_el * std::fabs(a2 - prev_elbow);
         };
 
         double shoulder_pitch_sel = 0.0, elbow_sel = 0.0;
@@ -254,7 +334,7 @@ private:
         {
             single_shot_command_ = true;
             auto_enabled_ = false;
-            RCLCPP_WARN(this->get_logger(), "Target latched once. Auto tracking disabled.");
+            // RCLCPP_WARN(this->get_logger(), "Target latched onced.");
         }
         else
         {
@@ -270,13 +350,12 @@ private:
         command_time_from_start_sec_ = 2.0;
         single_shot_command_ = true;
         target_valid_ = true;
-        RCLCPP_WARN(this->get_logger(), "Arm moving to home pose slowly. Auto tracking disabled.");
+        // RCLCPP_WARN(this->get_logger(), "Arm moving to home pose slowly..");
     }
 
     void on_auto_enable(const std_msgs::msg::Bool &msg)
     {
         auto_enabled_ = msg.data;
-        RCLCPP_INFO(this->get_logger(), "Arm auto tracking %s.", auto_enabled_ ? "enabled" : "disabled");
     }
 
     void on_joint_state(const sensor_msgs::msg::JointState &msg)
@@ -314,7 +393,8 @@ private:
     }
 
     bool target_to_arm_base_point(const gimbal_mani::msg::TargetBearingRange &msg,
-                                  double &x_out, double &y_out, double &z_out)
+                                  double &x_out, double &y_out, double &z_out,
+                                  double &ux_out, double &uy_out, double &uz_out)
     {
         if (msg.header.frame_id.empty())
         {
@@ -323,14 +403,21 @@ private:
             return false;
         }
 
-        const double cp = std::cos(msg.pitch);
+        // System convention: +pitch means looking downward.
+        // Convert to math-up convention before spherical -> Cartesian conversion.
+        const double pitch_up = -msg.pitch;
+        const double cp = std::cos(pitch_up);
+        const double range_use = std::max(min_effective_range_, msg.range);
+        const double ux_sensor = cp * std::cos(msg.yaw);
+        const double uy_sensor = cp * std::sin(msg.yaw);
+        const double uz_sensor = std::sin(pitch_up);
         const geometry_msgs::msg::PointStamped p_sensor = [&]()
         {
             geometry_msgs::msg::PointStamped p;
             p.header = msg.header;
-            p.point.x = msg.range * cp * std::cos(msg.yaw);
-            p.point.y = msg.range * cp * std::sin(msg.yaw);
-            p.point.z = msg.range * std::sin(msg.pitch);
+            p.point.x = range_use * ux_sensor;
+            p.point.y = range_use * uy_sensor;
+            p.point.z = range_use * uz_sensor;
             return p;
         }();
 
@@ -341,6 +428,31 @@ private:
             const auto tf = tf_buffer_->lookupTransform(
                 arm_base_frame_, msg.header.frame_id, tf_time, rclcpp::Duration::from_seconds(0.03));
             tf2::doTransform(p_sensor, p_base, tf);
+
+            tf2::Quaternion q;
+            tf2::fromMsg(tf.transform.rotation, q);
+            tf2::Matrix3x3 R(q);
+            tf2::Vector3 u_base = R * tf2::Vector3(ux_sensor, uy_sensor, uz_sensor);
+            const double n = u_base.length();
+            if (n <= 1e-9 || !std::isfinite(n))
+            {
+                RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+                                     "Invalid ray direction norm after TF rotation.");
+                return false;
+            }
+            ux_out = u_base.x() / n;
+            uy_out = u_base.y() / n;
+            uz_out = u_base.z() / n;
+
+            RCLCPP_INFO_THROTTLE(
+                this->get_logger(), *this->get_clock(), 500,
+                "target_tf: frame=%s->%s yaw=%.3f pitch=%.3f range=%.3f range_use=%.3f | "
+                "p_sensor=(%.3f,%.3f,%.3f) p_base=(%.3f,%.3f,%.3f) u_base=(%.3f,%.3f,%.3f)",
+                msg.header.frame_id.c_str(), arm_base_frame_.c_str(),
+                msg.yaw, msg.pitch, msg.range, range_use,
+                p_sensor.point.x, p_sensor.point.y, p_sensor.point.z,
+                p_base.point.x, p_base.point.y, p_base.point.z,
+                ux_out, uy_out, uz_out);
         }
         catch (const tf2::TransformException &ex)
         {
@@ -349,7 +461,7 @@ private:
                                  msg.header.frame_id.c_str(), arm_base_frame_.c_str(), ex.what());
             return false;
         }
-
+        double temp_offset = 0.055;
         x_out = p_base.point.x;
         y_out = p_base.point.y;
         z_out = p_base.point.z;
@@ -395,6 +507,30 @@ private:
             {
                 wrist_pitch_level_bias_ = p.as_double();
             }
+            else if (name == "pre_grasp_standoff")
+            {
+                pre_grasp_standoff_ = p.as_double();
+            }
+            else if (name == "pre_grasp_lift_z")
+            {
+                pre_grasp_lift_z_ = p.as_double();
+            }
+            else if (name == "min_effective_range")
+            {
+                min_effective_range_ = p.as_double();
+            }
+            else if (name == "gripper_tool_length")
+            {
+                gripper_tool_length_ = p.as_double();
+            }
+            else if (name == "target_lpf_alpha")
+            {
+                target_lpf_alpha_ = p.as_double();
+            }
+            else if (name == "retarget_deadband_m")
+            {
+                retarget_deadband_m_ = p.as_double();
+            }
             else if (name == "pub_hz")
             {
                 // runtime change not applied to existing timer period in this implementation
@@ -425,6 +561,12 @@ private:
 
     bool target_single_shot_mode_{true};
     double wrist_pitch_level_bias_{-1.5};
+    double pre_grasp_standoff_{0.08}; // 타겟까지의 실제 거리
+    double pre_grasp_lift_z_{0.015};
+    double min_effective_range_{0.05};
+    double target_lpf_alpha_{0.25};
+    double retarget_deadband_m_{0.01};
+    double gripper_tool_length_{0.0601};
 
     std::vector<std::string> joint_name_;
     std::vector<double> goal_;
@@ -434,6 +576,14 @@ private:
     gimbal_mani::msg::TargetBearingRange last_target_msg_;
     bool has_last_target_{false};
     bool recompute_requested_{false};
+    bool has_last_raw_target_{false};
+    double last_raw_x_{0.0};
+    double last_raw_y_{0.0};
+    double last_raw_z_{0.0};
+    bool has_filtered_target_{false};
+    double filt_x_{0.0};
+    double filt_y_{0.0};
+    double filt_z_{0.0};
 
     rclcpp::Publisher<trajectory_msgs::msg::JointTrajectory>::SharedPtr pub_arm_traj_;
     rclcpp::Subscription<gimbal_mani::msg::TargetBearingRange>::SharedPtr sub_target_;
