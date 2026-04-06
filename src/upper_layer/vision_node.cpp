@@ -4,6 +4,7 @@
 #include <sensor_msgs/image_encodings.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <sensor_msgs/msg/laser_scan.hpp>
+#include <builtin_interfaces/msg/time.hpp>
 
 #include <opencv2/opencv.hpp>
 #include "gimbal_mani/msg/target_bearing_range.hpp"
@@ -26,6 +27,7 @@ public:
 
         // capture fps / timer period
         fps_ = declare_parameter<double>("fps", 30.0);
+        target_frame_id_ = declare_parameter<std::string>("target_frame_id", "tof_link");
 
         // ---- pub
         tbr_pub_ = create_publisher<gimbal_mani::msg::TargetBearingRange>(
@@ -155,6 +157,8 @@ private:
             return;
 
         tof_range_m_ = static_cast<double>(r0);
+        last_tof_stamp_ = msg.header.stamp;
+        has_tof_stamp_ = true;
     }
 
     void start_real_capture()
@@ -192,8 +196,12 @@ private:
     void publish_target(double yaw, double pitch, double range, double object_yaw)
     {
         gimbal_mani::msg::TargetBearingRange out;
-        out.header.stamp = now();
-        out.header.frame_id = "gimbal_camera_link";
+        builtin_interfaces::msg::Time now_msg;
+        const int64_t now_ns = this->get_clock()->now().nanoseconds();
+        now_msg.sec = static_cast<int32_t>(now_ns / 1000000000LL);
+        now_msg.nanosec = static_cast<uint32_t>(now_ns % 1000000000LL);
+        out.header.stamp = has_tof_stamp_ ? last_tof_stamp_ : now_msg;
+        out.header.frame_id = target_frame_id_;
         out.yaw = yaw;
         out.pitch = pitch;
         out.range = range;
@@ -206,12 +214,15 @@ private:
     std::string input_mode_;
     std::string sim_image_topic_;
     std::string device_;
+    std::string target_frame_id_;
     double fps_ = 30.0;
 
     std::string target_color_ = "NONE";
     double yaw_cmd_ = 0.0;
     double pitch_cmd_ = 0.0;
     double tof_range_m_ = std::numeric_limits<double>::quiet_NaN();
+    builtin_interfaces::msg::Time last_tof_stamp_{};
+    bool has_tof_stamp_{false};
 
 
     // ros
