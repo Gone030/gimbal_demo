@@ -1,6 +1,7 @@
 #include <cmath>
 #include <string>
 #include <vector>
+#include <deque>
 #include <chrono>
 #include <algorithm>
 
@@ -29,7 +30,7 @@ class Arm_UpperLayerMain : public rclcpp::Node
 public:
     Arm_UpperLayerMain() : Node("arm_upper_layer_main")
     {
-        L1_ = this->declare_parameter<double>("L1", 0.116); // 실제 길이에 맞게 수정해야함
+        L1_ = this->declare_parameter<double>("L1", 0.116);
         L2_ = this->declare_parameter<double>("L2", 0.135);
 
         saturate_reach_ = this->declare_parameter<bool>("saturate_reach", true);
@@ -37,11 +38,23 @@ public:
         target_single_shot_mode_ = this->declare_parameter<bool>("target_single_shot_mode", true);
         wrist_pitch_level_bias_ = this->declare_parameter<double>("wrist_pitch_level_bias", -1.5);
         pre_grasp_standoff_ = this->declare_parameter<double>("pre_grasp_standoff", 0.0);
-        pre_grasp_lift_z_ = this->declare_parameter<double>("pre_grasp_lift_z", 0.01);
+        pre_grasp_lift_z_ = this->declare_parameter<double>("pre_grasp_lift_z", 0.0);
         min_effective_range_ = this->declare_parameter<double>("min_effective_range", 0.02);
-        gripper_tool_length_ = this->declare_parameter<double>("gripper_tool_length", 0.0602);
+        gripper_tool_length_ = this->declare_parameter<double>("gripper_tool_length", 0.0);
+        pre_grasp_distance_m_ = this->declare_parameter<double>("pre_grasp_distance_m", 0.08);
+        final_approach_distance_m_ = this->declare_parameter<double>("final_approach_distance_m", 0.02);
+        pre_grasp_lift_z_m_ = this->declare_parameter<double>("pre_grasp_lift_z_m", 0.01);
+        final_grasp_lift_z_m_ = this->declare_parameter<double>("final_grasp_lift_z_m", 0.0);
+
+        // 기존 파라미터 호환 유지. 현재 최종 목표 생성에는 직접 사용하지 않음.
         target_lpf_alpha_ = this->declare_parameter<double>("target_lpf_alpha", 0.25);
         retarget_deadband_m_ = this->declare_parameter<double>("retarget_deadband_m", 0.01);
+
+        target_lock_min_samples_ = this->declare_parameter<int>("target_lock_min_samples", 8);
+        target_lock_pos_tol_m_ = this->declare_parameter<double>("target_lock_pos_tol_m", 0.01);
+        hold_time_sec_ = this->declare_parameter<double>("hold_time_sec", 0.4);
+        joint_reach_tol_rad_ = this->declare_parameter<double>("joint_reach_tol_rad", 0.25);
+        final_joint_tol_rad_ = this->declare_parameter<double>("final_joint_tol_rad", 0.15);
 
         shoulder_rot_x_ = this->declare_parameter<double>("shoulder_rot_x", 0.0);
         shoulder_rot_y_ = this->declare_parameter<double>("shoulder_rot_y", -0.0452);
@@ -92,35 +105,137 @@ public:
     }
 
 private:
+    enum class AutoPhase
+    {
+        IDLE,
+        TARGET_LOCK,
+        PRE_GRASP_MOVE,
+        PRE_GRASP_HOLD,
+        FINAL_APPROACH,
+    };
+
+    struct TargetSample
+    {
+        double x{0.0};
+        double y{0.0};
+        double z{0.0};
+        double object_yaw{0.0};
+    };
+
+    struct TargetPoint
+    {
+        double x{0.0};
+        double y{0.0};
+        double z{0.0};
+    };
+
     void on_timer()
     {
-        if (recompute_requested_ && auto_enabled_ && has_last_target_)
+        if (!auto_enabled_)
         {
-            recompute_requested_ = false;
-            on_target(last_target_msg_);
-        }
-
-        if (!target_valid_)
-        {
+            publish_current_goal();
             return;
         }
 
-        trajectory_msgs::msg::JointTrajectory traj;
-        traj.header.stamp = this->now();
-        traj.joint_names = joint_name_;
-
-        trajectory_msgs::msg::JointTrajectoryPoint p;
-        p.positions = goal_;
-        p.time_from_start = rclcpp::Duration::from_seconds(command_time_from_start_sec_);
-
-        traj.points.push_back(p);
-        pub_arm_traj_->publish(traj);
-
-        if (single_shot_command_)
+        switch (auto_phase_)
         {
-            single_shot_command_ = false;
-            target_valid_ = false;
+        case AutoPhase::IDLE:
+            break;
+
+        case AutoPhase::TARGET_LOCK:
+        {
+            if (plan_locked_points())
+            {
+                if (!solve_goal_from_point(pre_grasp_point_, locked_object_yaw_))
+                {
+                    target_valid_ = false;
+                    break;
+                }
+
+                command_time_from_start_sec_ = 1.0;
+                auto_phase_ = AutoPhase::PRE_GRASP_MOVE;
+
+                RCLCPP_INFO(this->get_logger(),
+                            "TARGET_LOCK done: obj=(%.3f, %.3f, %.3f) pre=(%.3f, %.3f, %.3f) grasp=(%.3f, %.3f, %.3f)",
+                            locked_object_point_.x, locked_object_point_.y, locked_object_point_.z,
+                            pre_grasp_point_.x, pre_grasp_point_.y, pre_grasp_point_.z,
+                            grasp_point_.x, grasp_point_.y, grasp_point_.z);
+            }
+            break;
         }
+
+        case AutoPhase::PRE_GRASP_MOVE:
+        {
+            if (!solve_goal_from_point(pre_grasp_point_, locked_object_yaw_))
+            {
+                target_valid_ = false;
+                break;
+            }
+
+            command_time_from_start_sec_ = 1.0;
+            if (arm_goal_reached(joint_reach_tol_rad_))
+            {
+                auto_phase_ = AutoPhase::PRE_GRASP_HOLD;
+                hold_start_time_sec_ = this->now().seconds();
+            }
+            break;
+        }
+
+        case AutoPhase::PRE_GRASP_HOLD:
+        {
+            if (!solve_goal_from_point(pre_grasp_point_, locked_object_yaw_))
+            {
+                target_valid_ = false;
+                break;
+            }
+
+            command_time_from_start_sec_ = 1.0;
+            if (!arm_goal_reached(joint_reach_tol_rad_))
+            {
+                hold_start_time_sec_ = this->now().seconds();
+                break;
+            }
+
+            const double held = this->now().seconds() - hold_start_time_sec_;
+            if (held >= hold_time_sec_)
+            {
+                auto_phase_ = AutoPhase::FINAL_APPROACH;
+            }
+            break;
+        }
+
+        case AutoPhase::FINAL_APPROACH:
+        {
+            if (!solve_goal_from_point(grasp_point_, locked_object_yaw_))
+            {
+                target_valid_ = false;
+                break;
+            }
+
+            command_time_from_start_sec_ = 1.0;
+            if (arm_goal_reached(final_joint_tol_rad_))
+            {
+                RCLCPP_INFO(this->get_logger(), "FINAL_APPROACH done.");
+                target_valid_ = false;
+
+                if (target_single_shot_mode_)
+                {
+                    auto_enabled_ = false;
+                    auto_phase_ = AutoPhase::IDLE;
+                    reset_auto_sequence();
+                }
+                else
+                {
+                    auto_phase_ = AutoPhase::IDLE;
+                    // reset_auto_sequence();
+                    target_valid_ = true;
+                }
+            }
+            break;
+        }
+        }
+
+        publish_current_goal();
     }
 
     void on_target(const gimbal_mani::msg::TargetBearingRange &msg)
@@ -135,12 +250,9 @@ private:
                                  "Waiting for /joint_states before closed-loop IK update.");
             return;
         }
-        has_last_target_ = true;
-        last_target_msg_ = msg;
 
         if (!std::isfinite(msg.yaw) || !std::isfinite(msg.pitch) || !std::isfinite(msg.range) || msg.range <= 0.0)
         {
-            target_valid_ = false;
             return;
         }
 
@@ -152,210 +264,53 @@ private:
         double ray_uz = 0.0;
         if (!target_to_arm_base_point(msg, target_x, target_y, target_z, ray_ux, ray_uy, ray_uz))
         {
-            target_valid_ = false;
             return;
         }
 
-        const double total_standoff = pre_grasp_standoff_ + gripper_tool_length_;
-        double x = target_x - total_standoff * ray_ux;
-        double y = target_y - total_standoff * ray_uy;
-        double z = target_z - total_standoff * ray_uz;
-        z -= pre_grasp_lift_z_;
-
-        // Retarget hysteresis: ignore tiny target motions to reduce hunting.
-        if (!has_last_raw_target_)
+        if (auto_phase_ != AutoPhase::TARGET_LOCK)
         {
-            last_raw_x_ = x;
-            last_raw_y_ = y;
-            last_raw_z_ = z;
-            has_last_raw_target_ = true;
-        }
-        else
-        {
-            const double dx = x - last_raw_x_;
-            const double dy = y - last_raw_y_;
-            const double dz = z - last_raw_z_;
-            const double d = std::sqrt((dx * dx) + (dy * dy) + (dz * dz));
-            if (d >= retarget_deadband_m_)
-            {
-                last_raw_x_ = x;
-                last_raw_y_ = y;
-                last_raw_z_ = z;
-            }
-            else
-            {
-                x = last_raw_x_;
-                y = last_raw_y_;
-                z = last_raw_z_;
-            }
-        }
-
-        // Low-pass filter in arm base frame.
-        const double alpha = std::clamp(target_lpf_alpha_, 0.0, 1.0);
-        if (!has_filtered_target_)
-        {
-            filt_x_ = x;
-            filt_y_ = y;
-            filt_z_ = z;
-            has_filtered_target_ = true;
-        }
-        else
-        {
-            filt_x_ = alpha * x + (1.0 - alpha) * filt_x_;
-            filt_y_ = alpha * y + (1.0 - alpha) * filt_y_;
-            filt_z_ = alpha * z + (1.0 - alpha) * filt_z_;
-        }
-        x = filt_x_;
-        y = filt_y_;
-        z = filt_z_;
-
-        const double total_standoff_dbg = total_standoff;
-
-        const double x_sr = x - shoulder_rot_x_;
-        const double y_sr = y - shoulder_rot_y_;
-        const double z_sr = z - shoulder_rot_z_;
-
-        // Shoulder_Rotation is not msg.yaw.
-        // It must be computed from the transformed target point around the real yaw axis.
-        // Frame convention fix: in this model, forward on yaw plane maps to -y.
-        const double psi_raw = std::atan2(x_sr, -y_sr);
-        const double psi = nearest_equivalent_angle(psi_raw, q_meas_[0]);
-
-        const double c = std::cos(psi_raw);
-        const double s = std::sin(psi_raw);
-
-        // target in Shoulder_Rotation_Pitch frame (after desired yaw alignment)
-        const double x_plane = c * x_sr + s * y_sr;   // should be near 0
-        const double y_plane = z_sr;
-        const double z_plane = s * x_sr - c * y_sr;
-
-        // move origin from Shoulder_Rotation pivot to Shoulder_Pitch pivot
-        double rho = z_plane - shoulder_pitch_offset_y_;
-        double z2  = y_plane - shoulder_pitch_offset_z_;
-
-        RCLCPP_INFO_THROTTLE(
-            this->get_logger(), *this->get_clock(), 500,
-            "on_target: range=%.3f (standoff=%.3f tool=%.3f lift_z=%.3f min=%.3f total=%.3f) "
-            "target=(%.3f,%.3f,%.3f) ray=(%.3f,%.3f,%.3f) wrist=(%.3f,%.3f,%.3f) rho=%.3f z2=%.3f",
-            msg.range,
-            pre_grasp_standoff_, gripper_tool_length_, pre_grasp_lift_z_, min_effective_range_,
-            total_standoff_dbg,
-            target_x, target_y, target_z,
-            ray_ux, ray_uy, ray_uz,
-            x, y, z, rho, z2);
-        if (saturate_reach_)
-        {
-            const double rr = std::sqrt((rho * rho) + (z2 * z2));
-            if (rr >= 1e-9)
-            {
-                const double r_max = (L1_ + L2_);
-                const double r_min = std::fabs(L1_ - L2_);
-                double rr_sat = rr;
-                if (rr > r_max)
-                    rr_sat = r_max;
-                else if (rr < r_min)
-                    rr_sat = r_min;
-
-                if (rr_sat != rr)
-                {
-                    const double s = rr_sat / rr;
-                    rho *= s;
-                    z2 *= s;
-                }
-            }
-        }
-
-        double th1_up = 0.0, th2_up = 0.0;
-        double th1_dn = 0.0, th2_dn = 0.0;
-        const bool ok_up = ik_2link_2d(rho, z2, L1_, L2_, +1, th1_up, th2_up);
-        const bool ok_dn = ik_2link_2d(rho, z2, L1_, L2_, -1, th1_dn, th2_dn);
-
-        if (!ok_up && !ok_dn)
-        {
-            target_valid_ = false;
-            RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
-                                 "IK unreachable: rho=%.4f z=%.4f (L1=%.3f L2=%.3f)", rho, z2, L1_, L2_);
             return;
         }
 
-        const double prev_shoulder_pitch = q_meas_[1];
-        const double prev_elbow = q_meas_[2];
-
-        const double shoulder_pitch_up = nearest_equivalent_angle(th1_up, prev_shoulder_pitch);
-        const double elbow_up = nearest_equivalent_angle(th2_up, prev_elbow);
-        const double shoulder_pitch_dn = nearest_equivalent_angle(th1_dn, prev_shoulder_pitch);
-        const double elbow_dn = nearest_equivalent_angle(th2_dn, prev_elbow);
-
-        auto cost = [&](double a1, double a2)
+        target_lock_buffer_.push_back({target_x, target_y, target_z, msg.object_yaw});
+        while (static_cast<int>(target_lock_buffer_.size()) > target_lock_min_samples_)
         {
-            const double w_sh = 0.7;   // shoulder 변화는 덜 벌점
-            const double w_el = 1.1;   // elbow 변화는 더 벌점
-            return w_sh * std::fabs(a1 - prev_shoulder_pitch) +
-                w_el * std::fabs(a2 - prev_elbow);
-        };
-
-        double shoulder_pitch_sel = 0.0, elbow_sel = 0.0;
-        if (ok_up && !ok_dn)
-        {
-            shoulder_pitch_sel = shoulder_pitch_up;
-            elbow_sel = elbow_up;
+            target_lock_buffer_.pop_front();
         }
-        else if (!ok_up && ok_dn)
-        {
-            shoulder_pitch_sel = shoulder_pitch_dn;
-            elbow_sel = elbow_dn;
-        }
-        else
-        {
-            if (cost(shoulder_pitch_up, elbow_up) <= cost(shoulder_pitch_dn, elbow_dn))
-            {
-                shoulder_pitch_sel = shoulder_pitch_up;
-                elbow_sel = elbow_up;
-            }
-            else
-            {
-                shoulder_pitch_sel = shoulder_pitch_dn;
-                elbow_sel = elbow_dn;
-            }
-        }
-
-        goal_[0] = psi;
-        goal_[1] = shoulder_pitch_sel;
-        goal_[2] = elbow_sel;
-
-        // Keep wrist pitch axis roughly horizontal with a fixed bias (URDF zero policy).
-        const double wrist_pitch_raw = -(goal_[1] + goal_[2]) + wrist_pitch_level_bias_;
-        goal_[3] = nearest_equivalent_angle(wrist_pitch_raw, q_meas_[3]);
-
-        goal_[4] = nearest_equivalent_angle(msg.object_yaw, q_meas_[4]); // temp, 비전, 프레임 정책에 따라 바뀔 수 있음
-
-        command_time_from_start_sec_ = 1.0;
-        if (target_single_shot_mode_)
-        {
-            single_shot_command_ = true;
-            auto_enabled_ = false;
-            // RCLCPP_WARN(this->get_logger(), "Target latched onced.");
-        }
-        else
-        {
-            single_shot_command_ = false;
-        }
-        target_valid_ = true;
     }
 
     void on_home(const std_msgs::msg::Empty &)
     {
         auto_enabled_ = false;
+        auto_phase_ = AutoPhase::IDLE;
+        reset_auto_sequence();
+
         goal_ = home_goal_;
         command_time_from_start_sec_ = 2.0;
-        single_shot_command_ = true;
         target_valid_ = true;
-        // RCLCPP_WARN(this->get_logger(), "Arm moving to home pose slowly..");
     }
 
     void on_auto_enable(const std_msgs::msg::Bool &msg)
     {
+        if (msg.data == auto_enabled_)
+        {
+            return;
+        }
+
         auto_enabled_ = msg.data;
+
+        if (auto_enabled_)
+        {
+            reset_auto_sequence();
+            auto_phase_ = AutoPhase::TARGET_LOCK;
+            target_valid_ = false;
+        }
+        else
+        {
+            auto_phase_ = AutoPhase::IDLE;
+            reset_auto_sequence();
+            target_valid_ = false;
+        }
     }
 
     void on_joint_state(const sensor_msgs::msg::JointState &msg)
@@ -461,16 +416,275 @@ private:
                                  msg.header.frame_id.c_str(), arm_base_frame_.c_str(), ex.what());
             return false;
         }
-        double temp_offset = 0.055;
+
         x_out = p_base.point.x;
         y_out = p_base.point.y;
         z_out = p_base.point.z;
         return true;
     }
 
+    void publish_current_goal()
+    {
+        if (!target_valid_)
+        {
+            return;
+        }
+
+        trajectory_msgs::msg::JointTrajectory traj;
+        traj.header.stamp = this->now();
+        traj.joint_names = joint_name_;
+
+        trajectory_msgs::msg::JointTrajectoryPoint p;
+        p.positions = goal_;
+        p.time_from_start = rclcpp::Duration::from_seconds(command_time_from_start_sec_);
+
+        traj.points.push_back(p);
+        pub_arm_traj_->publish(traj);
+    }
+
+    void reset_auto_sequence()
+    {
+        target_lock_buffer_.clear();
+        has_locked_object_point_ = false;
+        hold_start_time_sec_ = -1.0;
+        target_valid_ = false;
+    }
+
+    TargetSample mean_locked_target() const
+    {
+        TargetSample m;
+        if (target_lock_buffer_.empty())
+        {
+            return m;
+        }
+
+        double yaw_c = 0.0;
+        double yaw_s = 0.0;
+        for (const auto &p : target_lock_buffer_)
+        {
+            m.x += p.x;
+            m.y += p.y;
+            m.z += p.z;
+            yaw_c += std::cos(p.object_yaw);
+            yaw_s += std::sin(p.object_yaw);
+        }
+
+        const double n = static_cast<double>(target_lock_buffer_.size());
+        m.x /= n;
+        m.y /= n;
+        m.z /= n;
+        m.object_yaw = std::atan2(yaw_s, yaw_c);
+        return m;
+    }
+
+    double max_locked_target_deviation(const TargetSample &mean) const
+    {
+        double max_d = 0.0;
+        for (const auto &p : target_lock_buffer_)
+        {
+            const double dx = p.x - mean.x;
+            const double dy = p.y - mean.y;
+            const double dz = p.z - mean.z;
+            const double d = std::sqrt(dx * dx + dy * dy + dz * dz);
+            max_d = std::max(max_d, d);
+        }
+        return max_d;
+    }
+
+    bool plan_locked_points()
+    {
+        if (static_cast<int>(target_lock_buffer_.size()) < target_lock_min_samples_)
+        {
+            return false;
+        }
+
+        const auto mean = mean_locked_target();
+        const double max_dev = max_locked_target_deviation(mean);
+        if (max_dev > target_lock_pos_tol_m_)
+        {
+            return false;
+        }
+
+        locked_object_point_.x = mean.x;
+        locked_object_point_.y = mean.y;
+        locked_object_point_.z = mean.z;
+        locked_object_yaw_ = mean.object_yaw;
+        has_locked_object_point_ = true;
+
+        double vx = mean.x;
+        double vy = mean.y;
+        const double nxy = std::hypot(vx, vy);
+        if (nxy > 1e-6)
+        {
+            vx /= nxy;
+            vy /= nxy;
+            last_valid_vx_ = vx;
+            last_valid_vy_ = vy;
+        }
+        else
+        {
+            const double last_n = std::hypot(last_valid_vx_, last_valid_vy_);
+            if (last_n <= 1e-6)
+            {
+                RCLCPP_WARN(this->get_logger(), "plan_locked_points: horizontal approach axis is invalid.");
+                return false;
+            }
+            vx = last_valid_vx_;
+            vy = last_valid_vy_;
+        }
+
+        double d_pre = pre_grasp_distance_m_;
+        double d_grasp = final_approach_distance_m_;
+        if (d_pre < d_grasp)
+        {
+            std::swap(d_pre, d_grasp);
+        }
+
+        pre_grasp_point_.x = mean.x - d_pre * vx;
+        pre_grasp_point_.y = mean.y - d_pre * vy;
+        pre_grasp_point_.z = mean.z + pre_grasp_lift_z_m_;
+
+        grasp_point_.x = mean.x - d_grasp * vx;
+        grasp_point_.y = mean.y - d_grasp * vy;
+        grasp_point_.z = mean.z + final_grasp_lift_z_m_;
+
+        return true;
+    }
+
+    bool solve_goal_from_point(const TargetPoint &p, double wrist_roll_ref)
+    {
+        const double x = p.x;
+        const double y = p.y;
+        const double z = p.z;
+
+        const double x_sr = x - shoulder_rot_x_;
+        const double y_sr = y - shoulder_rot_y_;
+        const double z_sr = z - shoulder_rot_z_;
+
+        const double psi_raw = std::atan2(x_sr, -y_sr);
+        const double psi = nearest_equivalent_angle(psi_raw, q_meas_[0]);
+
+        const double c = std::cos(psi_raw);
+        const double s = std::sin(psi_raw);
+
+        const double y_plane = z_sr;
+        const double z_plane = s * x_sr - c * y_sr;
+
+        double rho = z_plane - shoulder_pitch_offset_y_;
+        double z2 = y_plane - shoulder_pitch_offset_z_;
+
+        RCLCPP_INFO_THROTTLE(
+            this->get_logger(), *this->get_clock(), 500,
+            "solve_goal: p=(%.3f,%.3f,%.3f) rho=%.3f z2=%.3f",
+            x, y, z, rho, z2);
+
+        if (saturate_reach_)
+        {
+            const double rr = std::sqrt((rho * rho) + (z2 * z2));
+            if (rr >= 1e-9)
+            {
+                const double r_max = (L1_ + L2_);
+                const double r_min = std::fabs(L1_ - L2_);
+                double rr_sat = rr;
+                if (rr > r_max)
+                {
+                    rr_sat = r_max;
+                }
+                else if (rr < r_min)
+                {
+                    rr_sat = r_min;
+                }
+
+                if (rr_sat != rr)
+                {
+                    const double scale = rr_sat / rr;
+                    rho *= scale;
+                    z2 *= scale;
+                }
+            }
+        }
+
+        double th1_up = 0.0, th2_up = 0.0;
+        double th1_dn = 0.0, th2_dn = 0.0;
+        const bool ok_up = ik_2link_2d(rho, z2, L1_, L2_, +1, th1_up, th2_up);
+        const bool ok_dn = ik_2link_2d(rho, z2, L1_, L2_, -1, th1_dn, th2_dn);
+
+        if (!ok_up && !ok_dn)
+        {
+            RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+                                 "IK unreachable: rho=%.4f z=%.4f (L1=%.3f L2=%.3f)", rho, z2, L1_, L2_);
+            return false;
+        }
+
+        const double prev_shoulder_pitch = q_meas_[1];
+        const double prev_elbow = q_meas_[2];
+
+        const double shoulder_pitch_up = nearest_equivalent_angle(th1_up, prev_shoulder_pitch);
+        const double elbow_up = nearest_equivalent_angle(th2_up, prev_elbow);
+        const double shoulder_pitch_dn = nearest_equivalent_angle(th1_dn, prev_shoulder_pitch);
+        const double elbow_dn = nearest_equivalent_angle(th2_dn, prev_elbow);
+
+        auto cost = [&](double a1, double a2)
+        {
+            const double w_sh = 0.7;
+            const double w_el = 1.1;
+            return w_sh * std::fabs(a1 - prev_shoulder_pitch) +
+                   w_el * std::fabs(a2 - prev_elbow);
+        };
+
+        double shoulder_pitch_sel = 0.0;
+        double elbow_sel = 0.0;
+        if (ok_up && !ok_dn)
+        {
+            shoulder_pitch_sel = shoulder_pitch_up;
+            elbow_sel = elbow_up;
+        }
+        else if (!ok_up && ok_dn)
+        {
+            shoulder_pitch_sel = shoulder_pitch_dn;
+            elbow_sel = elbow_dn;
+        }
+        else
+        {
+            if (cost(shoulder_pitch_up, elbow_up) <= cost(shoulder_pitch_dn, elbow_dn))
+            {
+                shoulder_pitch_sel = shoulder_pitch_up;
+                elbow_sel = elbow_up;
+            }
+            else
+            {
+                shoulder_pitch_sel = shoulder_pitch_dn;
+                elbow_sel = elbow_dn;
+            }
+        }
+
+        goal_[0] = psi;
+        goal_[1] = shoulder_pitch_sel;
+        goal_[2] = elbow_sel;
+
+        const double wrist_pitch_raw = -(goal_[1] + goal_[2]) + wrist_pitch_level_bias_;
+        goal_[3] = nearest_equivalent_angle(wrist_pitch_raw, q_meas_[3]);
+        goal_[4] = nearest_equivalent_angle(wrist_roll_ref, q_meas_[4]);
+
+        target_valid_ = true;
+        return true;
+    }
+
+    double arm_goal_error_sum() const
+    {
+        return std::fabs(wrap_pi(goal_[0] - q_meas_[0])) +
+               std::fabs(wrap_pi(goal_[1] - q_meas_[1])) +
+               std::fabs(wrap_pi(goal_[2] - q_meas_[2])) +
+               0.5 * std::fabs(wrap_pi(goal_[3] - q_meas_[3]));
+    }
+
+    bool arm_goal_reached(double tol) const
+    {
+        return arm_goal_error_sum() <= tol;
+    }
+
     static double nearest_equivalent_angle(double target, double reference)
     {
-        // choose target + 2k*pi that is closest to the previous command
         return reference + wrap_pi(target - reference);
     }
 
@@ -523,6 +737,22 @@ private:
             {
                 gripper_tool_length_ = p.as_double();
             }
+            else if (name == "pre_grasp_distance_m")
+            {
+                pre_grasp_distance_m_ = p.as_double();
+            }
+            else if (name == "final_approach_distance_m")
+            {
+                final_approach_distance_m_ = p.as_double();
+            }
+            else if (name == "pre_grasp_lift_z_m")
+            {
+                pre_grasp_lift_z_m_ = p.as_double();
+            }
+            else if (name == "final_grasp_lift_z_m")
+            {
+                final_grasp_lift_z_m_ = p.as_double();
+            }
             else if (name == "target_lpf_alpha")
             {
                 target_lpf_alpha_ = p.as_double();
@@ -531,15 +761,37 @@ private:
             {
                 retarget_deadband_m_ = p.as_double();
             }
+            else if (name == "target_lock_min_samples")
+            {
+                target_lock_min_samples_ = p.as_int();
+            }
+            else if (name == "target_lock_pos_tol_m")
+            {
+                target_lock_pos_tol_m_ = p.as_double();
+            }
+            else if (name == "hold_time_sec")
+            {
+                hold_time_sec_ = p.as_double();
+            }
+            else if (name == "joint_reach_tol_rad")
+            {
+                joint_reach_tol_rad_ = p.as_double();
+            }
+            else if (name == "final_joint_tol_rad")
+            {
+                final_joint_tol_rad_ = p.as_double();
+            }
             else if (name == "pub_hz")
             {
                 // runtime change not applied to existing timer period in this implementation
             }
         }
-        if (result.successful)
+
+        if (has_locked_object_point_)
         {
-            recompute_requested_ = true;
+            plan_locked_points();
         }
+
         return result;
     }
 
@@ -548,7 +800,6 @@ private:
     bool saturate_reach_{true};
     bool target_valid_{false};
     bool auto_enabled_{true};
-    bool single_shot_command_{false};
     double command_time_from_start_sec_{0.1};
     std::string arm_base_frame_{"Base"};
 
@@ -561,29 +812,39 @@ private:
 
     bool target_single_shot_mode_{true};
     double wrist_pitch_level_bias_{-1.5};
-    double pre_grasp_standoff_{0.08}; // 타겟까지의 실제 거리
-    double pre_grasp_lift_z_{0.015};
-    double min_effective_range_{0.05};
+    double pre_grasp_standoff_{0.0};
+    double pre_grasp_lift_z_{0.0};
+    double min_effective_range_{0.02};
     double target_lpf_alpha_{0.25};
     double retarget_deadband_m_{0.01};
-    double gripper_tool_length_{0.0601};
+    double gripper_tool_length_{0.0};
+    double pre_grasp_distance_m_{0.08};
+    double final_approach_distance_m_{0.02};
+    double pre_grasp_lift_z_m_{0.01};
+    double final_grasp_lift_z_m_{0.0};
+
+    int target_lock_min_samples_{8};
+    double target_lock_pos_tol_m_{0.01};
+    double hold_time_sec_{0.4};
+    double joint_reach_tol_rad_{0.25};
+    double final_joint_tol_rad_{0.15};
+
+    AutoPhase auto_phase_{AutoPhase::IDLE};
+    std::deque<TargetSample> target_lock_buffer_;
+    TargetPoint locked_object_point_{};
+    TargetPoint pre_grasp_point_{};
+    TargetPoint grasp_point_{};
+    bool has_locked_object_point_{false};
+    double locked_object_yaw_{0.0};
+    double hold_start_time_sec_{-1.0};
+    double last_valid_vx_{0.0};
+    double last_valid_vy_{-1.0};
 
     std::vector<std::string> joint_name_;
     std::vector<double> goal_;
     std::vector<double> home_goal_;
     std::vector<double> q_meas_{std::vector<double>(6, 0.0)};
     bool has_joint_state_{false};
-    gimbal_mani::msg::TargetBearingRange last_target_msg_;
-    bool has_last_target_{false};
-    bool recompute_requested_{false};
-    bool has_last_raw_target_{false};
-    double last_raw_x_{0.0};
-    double last_raw_y_{0.0};
-    double last_raw_z_{0.0};
-    bool has_filtered_target_{false};
-    double filt_x_{0.0};
-    double filt_y_{0.0};
-    double filt_z_{0.0};
 
     rclcpp::Publisher<trajectory_msgs::msg::JointTrajectory>::SharedPtr pub_arm_traj_;
     rclcpp::Subscription<gimbal_mani::msg::TargetBearingRange>::SharedPtr sub_target_;
