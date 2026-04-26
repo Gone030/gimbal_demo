@@ -35,26 +35,18 @@ public:
 
         saturate_reach_ = this->declare_parameter<bool>("saturate_reach", true);
         arm_base_frame_ = this->declare_parameter<std::string>("arm_base_frame", "Base");
-        target_single_shot_mode_ = this->declare_parameter<bool>("target_single_shot_mode", true);
+        min_effective_range_ = this->declare_parameter<double>("min_effective_range", 0.0);
         wrist_pitch_level_bias_ = this->declare_parameter<double>("wrist_pitch_level_bias", -1.5);
-        pre_grasp_standoff_ = this->declare_parameter<double>("pre_grasp_standoff", 0.0);
-        pre_grasp_lift_z_ = this->declare_parameter<double>("pre_grasp_lift_z", 0.0);
-        min_effective_range_ = this->declare_parameter<double>("min_effective_range", 0.02);
-        gripper_tool_length_ = this->declare_parameter<double>("gripper_tool_length", 0.0);
-        pre_grasp_distance_m_ = this->declare_parameter<double>("pre_grasp_distance_m", 0.08);
-        final_approach_distance_m_ = this->declare_parameter<double>("final_approach_distance_m", 0.02);
-        pre_grasp_lift_z_m_ = this->declare_parameter<double>("pre_grasp_lift_z_m", 0.01);
-        final_grasp_lift_z_m_ = this->declare_parameter<double>("final_grasp_lift_z_m", 0.0);
 
-        // 기존 파라미터 호환 유지. 현재 최종 목표 생성에는 직접 사용하지 않음.
-        target_lpf_alpha_ = this->declare_parameter<double>("target_lpf_alpha", 0.25);
-        retarget_deadband_m_ = this->declare_parameter<double>("retarget_deadband_m", 0.01);
+        pre_grasp_distance_m_ =
+            this->declare_parameter<double>("pre_grasp_distance_m", 0.08);
+        pre_grasp_lift_z_m_ =
+            this->declare_parameter<double>("pre_grasp_lift_z_m", 0.01);
 
         target_lock_min_samples_ = this->declare_parameter<int>("target_lock_min_samples", 8);
         target_lock_pos_tol_m_ = this->declare_parameter<double>("target_lock_pos_tol_m", 0.01);
         hold_time_sec_ = this->declare_parameter<double>("hold_time_sec", 0.4);
         joint_reach_tol_rad_ = this->declare_parameter<double>("joint_reach_tol_rad", 0.25);
-        final_joint_tol_rad_ = this->declare_parameter<double>("final_joint_tol_rad", 0.15);
 
         shoulder_rot_x_ = this->declare_parameter<double>("shoulder_rot_x", 0.0);
         shoulder_rot_y_ = this->declare_parameter<double>("shoulder_rot_y", -0.0452);
@@ -111,7 +103,6 @@ private:
         TARGET_LOCK,
         PRE_GRASP_MOVE,
         PRE_GRASP_HOLD,
-        FINAL_APPROACH,
     };
 
     struct TargetSample
@@ -156,10 +147,9 @@ private:
                 auto_phase_ = AutoPhase::PRE_GRASP_MOVE;
 
                 RCLCPP_INFO(this->get_logger(),
-                            "TARGET_LOCK done: obj=(%.3f, %.3f, %.3f) pre=(%.3f, %.3f, %.3f) grasp=(%.3f, %.3f, %.3f)",
+                            "TARGET_LOCK done: obj=(%.3f, %.3f, %.3f) pre=(%.3f, %.3f, %.3f)",
                             locked_object_point_.x, locked_object_point_.y, locked_object_point_.z,
-                            pre_grasp_point_.x, pre_grasp_point_.y, pre_grasp_point_.z,
-                            grasp_point_.x, grasp_point_.y, grasp_point_.z);
+                            pre_grasp_point_.x, pre_grasp_point_.y, pre_grasp_point_.z);
             }
             break;
         }
@@ -192,44 +182,16 @@ private:
             command_time_from_start_sec_ = 1.0;
             if (!arm_goal_reached(joint_reach_tol_rad_))
             {
-                hold_start_time_sec_ = this->now().seconds();
+                auto_phase_ = AutoPhase::PRE_GRASP_MOVE;
                 break;
             }
 
             const double held = this->now().seconds() - hold_start_time_sec_;
             if (held >= hold_time_sec_)
             {
-                auto_phase_ = AutoPhase::FINAL_APPROACH;
-            }
-            break;
-        }
-
-        case AutoPhase::FINAL_APPROACH:
-        {
-            if (!solve_goal_from_point(grasp_point_, locked_object_yaw_))
-            {
-                target_valid_ = false;
-                break;
-            }
-
-            command_time_from_start_sec_ = 1.0;
-            if (arm_goal_reached(final_joint_tol_rad_))
-            {
-                RCLCPP_INFO(this->get_logger(), "FINAL_APPROACH done.");
-                target_valid_ = false;
-
-                if (target_single_shot_mode_)
-                {
-                    auto_enabled_ = false;
-                    auto_phase_ = AutoPhase::IDLE;
-                    reset_auto_sequence();
-                }
-                else
-                {
-                    auto_phase_ = AutoPhase::IDLE;
-                    // reset_auto_sequence();
-                    target_valid_ = true;
-                }
+                RCLCPP_INFO(this->get_logger(), "PRE_GRASP_HOLD done.");
+                auto_enabled_ = false;
+                auto_phase_ = AutoPhase::IDLE;
             }
             break;
         }
@@ -533,20 +495,9 @@ private:
             vy = last_valid_vy_;
         }
 
-        double d_pre = pre_grasp_distance_m_;
-        double d_grasp = final_approach_distance_m_;
-        if (d_pre < d_grasp)
-        {
-            std::swap(d_pre, d_grasp);
-        }
-
-        pre_grasp_point_.x = mean.x - d_pre * vx;
-        pre_grasp_point_.y = mean.y - d_pre * vy;
+        pre_grasp_point_.x = mean.x - pre_grasp_distance_m_ * vx;
+        pre_grasp_point_.y = mean.y - pre_grasp_distance_m_ * vy;
         pre_grasp_point_.z = mean.z + pre_grasp_lift_z_m_;
-
-        grasp_point_.x = mean.x - d_grasp * vx;
-        grasp_point_.y = mean.y - d_grasp * vy;
-        grasp_point_.z = mean.z + final_grasp_lift_z_m_;
 
         return true;
     }
@@ -713,53 +664,21 @@ private:
             {
                 arm_base_frame_ = p.as_string();
             }
-            else if (name == "target_single_shot_mode")
+            else if (name == "min_effective_range")
             {
-                target_single_shot_mode_ = p.as_bool();
+                min_effective_range_ = p.as_double();
             }
             else if (name == "wrist_pitch_level_bias")
             {
                 wrist_pitch_level_bias_ = p.as_double();
             }
-            else if (name == "pre_grasp_standoff")
-            {
-                pre_grasp_standoff_ = p.as_double();
-            }
-            else if (name == "pre_grasp_lift_z")
-            {
-                pre_grasp_lift_z_ = p.as_double();
-            }
-            else if (name == "min_effective_range")
-            {
-                min_effective_range_ = p.as_double();
-            }
-            else if (name == "gripper_tool_length")
-            {
-                gripper_tool_length_ = p.as_double();
-            }
             else if (name == "pre_grasp_distance_m")
             {
                 pre_grasp_distance_m_ = p.as_double();
             }
-            else if (name == "final_approach_distance_m")
-            {
-                final_approach_distance_m_ = p.as_double();
-            }
             else if (name == "pre_grasp_lift_z_m")
             {
                 pre_grasp_lift_z_m_ = p.as_double();
-            }
-            else if (name == "final_grasp_lift_z_m")
-            {
-                final_grasp_lift_z_m_ = p.as_double();
-            }
-            else if (name == "target_lpf_alpha")
-            {
-                target_lpf_alpha_ = p.as_double();
-            }
-            else if (name == "retarget_deadband_m")
-            {
-                retarget_deadband_m_ = p.as_double();
             }
             else if (name == "target_lock_min_samples")
             {
@@ -776,10 +695,6 @@ private:
             else if (name == "joint_reach_tol_rad")
             {
                 joint_reach_tol_rad_ = p.as_double();
-            }
-            else if (name == "final_joint_tol_rad")
-            {
-                final_joint_tol_rad_ = p.as_double();
             }
             else if (name == "pub_hz")
             {
@@ -799,9 +714,10 @@ private:
     double L1_{0.116}, L2_{0.135};
     bool saturate_reach_{true};
     bool target_valid_{false};
-    bool auto_enabled_{true};
+    bool auto_enabled_{false};
     double command_time_from_start_sec_{0.1};
     std::string arm_base_frame_{"Base"};
+    double min_effective_range_{0.0};
 
     double shoulder_rot_x_{0.0};
     double shoulder_rot_y_{-0.0452};
@@ -810,30 +726,20 @@ private:
     double shoulder_pitch_offset_y_{0.1025};
     double shoulder_pitch_offset_z_{0.0306};
 
-    bool target_single_shot_mode_{true};
     double wrist_pitch_level_bias_{-1.5};
-    double pre_grasp_standoff_{0.0};
-    double pre_grasp_lift_z_{0.0};
-    double min_effective_range_{0.02};
-    double target_lpf_alpha_{0.25};
-    double retarget_deadband_m_{0.01};
-    double gripper_tool_length_{0.0};
+
     double pre_grasp_distance_m_{0.08};
-    double final_approach_distance_m_{0.02};
     double pre_grasp_lift_z_m_{0.01};
-    double final_grasp_lift_z_m_{0.0};
 
     int target_lock_min_samples_{8};
     double target_lock_pos_tol_m_{0.01};
     double hold_time_sec_{0.4};
     double joint_reach_tol_rad_{0.25};
-    double final_joint_tol_rad_{0.15};
 
     AutoPhase auto_phase_{AutoPhase::IDLE};
     std::deque<TargetSample> target_lock_buffer_;
     TargetPoint locked_object_point_{};
     TargetPoint pre_grasp_point_{};
-    TargetPoint grasp_point_{};
     bool has_locked_object_point_{false};
     double locked_object_yaw_{0.0};
     double hold_start_time_sec_{-1.0};
