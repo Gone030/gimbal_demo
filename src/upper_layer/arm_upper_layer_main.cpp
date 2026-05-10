@@ -4,6 +4,7 @@
 #include <deque>
 #include <chrono>
 #include <algorithm>
+#include <limits>
 
 #include <rclcpp/rclcpp.hpp>
 #include <geometry_msgs/msg/point.hpp>
@@ -23,6 +24,7 @@
 #include <tf2_ros/transform_listener.h>
 
 #include "gimbal_mani/ik_2link_2d.hpp"
+#include "gimbal_mani/msg/arm_auto_debug.hpp"
 #include "gimbal_mani/msg/target_bearing_range.hpp"
 
 class Arm_UpperLayerMain : public rclcpp::Node
@@ -35,18 +37,21 @@ public:
 
         saturate_reach_ = this->declare_parameter<bool>("saturate_reach", true);
         arm_base_frame_ = this->declare_parameter<std::string>("arm_base_frame", "Base");
+        end_effector_frame_ = this->declare_parameter<std::string>("end_effector_frame", "gimbal_mount_link");
         min_effective_range_ = this->declare_parameter<double>("min_effective_range", 0.0);
         wrist_pitch_level_bias_ = this->declare_parameter<double>("wrist_pitch_level_bias", -1.5);
 
         pre_grasp_distance_m_ =
-            this->declare_parameter<double>("pre_grasp_distance_m", 0.08);
+            this->declare_parameter<double>("pre_grasp_distance_m", 0.02);
         pre_grasp_lift_z_m_ =
-            this->declare_parameter<double>("pre_grasp_lift_z_m", 0.01);
+            this->declare_parameter<double>("pre_grasp_lift_z_m", 0.03);
 
         target_lock_min_samples_ = this->declare_parameter<int>("target_lock_min_samples", 8);
         target_lock_pos_tol_m_ = this->declare_parameter<double>("target_lock_pos_tol_m", 0.01);
         hold_time_sec_ = this->declare_parameter<double>("hold_time_sec", 0.4);
         joint_reach_tol_rad_ = this->declare_parameter<double>("joint_reach_tol_rad", 0.25);
+        hold_exit_tol_rad_ = this->declare_parameter<double>("hold_exit_tol_rad", 0.35);
+        target_filter_alpha_ = this->declare_parameter<double>("target_filter_alpha", 0.25);
 
         shoulder_rot_x_ = this->declare_parameter<double>("shoulder_rot_x", 0.0);
         shoulder_rot_y_ = this->declare_parameter<double>("shoulder_rot_y", -0.0452);
@@ -67,6 +72,8 @@ public:
 
         pub_arm_traj_ = this->create_publisher<trajectory_msgs::msg::JointTrajectory>(
             "/joint_trajectory_in/arm", 10);
+        pub_auto_debug_ = this->create_publisher<gimbal_mani::msg::ArmAutoDebug>(
+            "/arm/auto_debug", 10);
 
         sub_target_ = this->create_subscription<gimbal_mani::msg::TargetBearingRange>(
             "/target", 10,
@@ -100,8 +107,8 @@ private:
     enum class AutoPhase
     {
         IDLE,
-        TARGET_LOCK,
-        PRE_GRASP_MOVE,
+        TARGET_ACQUIRE,
+        TRACK_PRE_GRASP,
         PRE_GRASP_HOLD,
     };
 
@@ -125,6 +132,7 @@ private:
         if (!auto_enabled_)
         {
             publish_current_goal();
+            publish_auto_debug();
             return;
         }
 
@@ -133,7 +141,7 @@ private:
         case AutoPhase::IDLE:
             break;
 
-        case AutoPhase::TARGET_LOCK:
+        case AutoPhase::TARGET_ACQUIRE:
         {
             if (plan_locked_points())
             {
@@ -144,17 +152,17 @@ private:
                 }
 
                 command_time_from_start_sec_ = 1.0;
-                auto_phase_ = AutoPhase::PRE_GRASP_MOVE;
+                auto_phase_ = AutoPhase::TRACK_PRE_GRASP;
 
                 RCLCPP_INFO(this->get_logger(),
-                            "TARGET_LOCK done: obj=(%.3f, %.3f, %.3f) pre=(%.3f, %.3f, %.3f)",
+                            "TARGET_ACQUIRE done: obj=(%.3f, %.3f, %.3f) pre=(%.3f, %.3f, %.3f)",
                             locked_object_point_.x, locked_object_point_.y, locked_object_point_.z,
                             pre_grasp_point_.x, pre_grasp_point_.y, pre_grasp_point_.z);
             }
             break;
         }
 
-        case AutoPhase::PRE_GRASP_MOVE:
+        case AutoPhase::TRACK_PRE_GRASP:
         {
             if (!solve_goal_from_point(pre_grasp_point_, locked_object_yaw_))
             {
@@ -167,6 +175,7 @@ private:
             {
                 auto_phase_ = AutoPhase::PRE_GRASP_HOLD;
                 hold_start_time_sec_ = this->now().seconds();
+                hold_reached_logged_ = false;
             }
             break;
         }
@@ -180,24 +189,26 @@ private:
             }
 
             command_time_from_start_sec_ = 1.0;
-            if (!arm_goal_reached(joint_reach_tol_rad_))
+            if (!arm_goal_reached(hold_exit_tol_rad_))
             {
-                auto_phase_ = AutoPhase::PRE_GRASP_MOVE;
+                auto_phase_ = AutoPhase::TRACK_PRE_GRASP;
+                hold_start_time_sec_ = -1.0;
+                hold_reached_logged_ = false;
                 break;
             }
 
             const double held = this->now().seconds() - hold_start_time_sec_;
-            if (held >= hold_time_sec_)
+            if (held >= hold_time_sec_ && !hold_reached_logged_)
             {
-                RCLCPP_INFO(this->get_logger(), "PRE_GRASP_HOLD done.");
-                auto_enabled_ = false;
-                auto_phase_ = AutoPhase::IDLE;
+                RCLCPP_INFO(this->get_logger(), "PRE_GRASP_HOLD reached.");
+                hold_reached_logged_ = true;
             }
             break;
         }
         }
 
         publish_current_goal();
+        publish_auto_debug();
     }
 
     void on_target(const gimbal_mani::msg::TargetBearingRange &msg)
@@ -229,15 +240,20 @@ private:
             return;
         }
 
-        if (auto_phase_ != AutoPhase::TARGET_LOCK)
+        if (auto_phase_ == AutoPhase::TARGET_ACQUIRE)
         {
+            target_lock_buffer_.push_back({target_x, target_y, target_z, msg.object_yaw});
+            while (static_cast<int>(target_lock_buffer_.size()) > target_lock_min_samples_)
+            {
+                target_lock_buffer_.pop_front();
+            }
             return;
         }
 
-        target_lock_buffer_.push_back({target_x, target_y, target_z, msg.object_yaw});
-        while (static_cast<int>(target_lock_buffer_.size()) > target_lock_min_samples_)
+        if (auto_phase_ == AutoPhase::TRACK_PRE_GRASP ||
+            auto_phase_ == AutoPhase::PRE_GRASP_HOLD)
         {
-            target_lock_buffer_.pop_front();
+            update_tracked_target({target_x, target_y, target_z, msg.object_yaw});
         }
     }
 
@@ -264,7 +280,7 @@ private:
         if (auto_enabled_)
         {
             reset_auto_sequence();
-            auto_phase_ = AutoPhase::TARGET_LOCK;
+            auto_phase_ = AutoPhase::TARGET_ACQUIRE;
             target_valid_ = false;
         }
         else
@@ -408,7 +424,9 @@ private:
     {
         target_lock_buffer_.clear();
         has_locked_object_point_ = false;
+        has_commanded_goal_point_ = false;
         hold_start_time_sec_ = -1.0;
+        hold_reached_logged_ = false;
         target_valid_ = false;
     }
 
@@ -473,8 +491,36 @@ private:
         locked_object_yaw_ = mean.object_yaw;
         has_locked_object_point_ = true;
 
-        double vx = mean.x;
-        double vy = mean.y;
+        return update_pre_grasp_point();
+    }
+
+    void update_tracked_target(const TargetSample &sample)
+    {
+        const double alpha = clamp(target_filter_alpha_, 0.0, 1.0);
+        if (!has_locked_object_point_)
+        {
+            locked_object_point_.x = sample.x;
+            locked_object_point_.y = sample.y;
+            locked_object_point_.z = sample.z;
+            locked_object_yaw_ = sample.object_yaw;
+            has_locked_object_point_ = true;
+        }
+        else
+        {
+            locked_object_point_.x += alpha * (sample.x - locked_object_point_.x);
+            locked_object_point_.y += alpha * (sample.y - locked_object_point_.y);
+            locked_object_point_.z += alpha * (sample.z - locked_object_point_.z);
+            locked_object_yaw_ += alpha * wrap_pi(sample.object_yaw - locked_object_yaw_);
+            locked_object_yaw_ = wrap_pi(locked_object_yaw_);
+        }
+
+        update_pre_grasp_point();
+    }
+
+    bool update_pre_grasp_point()
+    {
+        double vx = locked_object_point_.x;
+        double vy = locked_object_point_.y;
         const double nxy = std::hypot(vx, vy);
         if (nxy > 1e-6)
         {
@@ -495,9 +541,9 @@ private:
             vy = last_valid_vy_;
         }
 
-        pre_grasp_point_.x = mean.x - pre_grasp_distance_m_ * vx;
-        pre_grasp_point_.y = mean.y - pre_grasp_distance_m_ * vy;
-        pre_grasp_point_.z = mean.z + pre_grasp_lift_z_m_;
+        pre_grasp_point_.x = locked_object_point_.x - pre_grasp_distance_m_ * vx;
+        pre_grasp_point_.y = locked_object_point_.y - pre_grasp_distance_m_ * vy;
+        pre_grasp_point_.z = locked_object_point_.z + pre_grasp_lift_z_m_;
 
         return true;
     }
@@ -618,6 +664,8 @@ private:
         goal_[4] = nearest_equivalent_angle(wrist_roll_ref, q_meas_[4]);
 
         target_valid_ = true;
+        commanded_goal_point_ = p;
+        has_commanded_goal_point_ = true;
         return true;
     }
 
@@ -637,6 +685,129 @@ private:
     static double nearest_equivalent_angle(double target, double reference)
     {
         return reference + wrap_pi(target - reference);
+    }
+
+    static geometry_msgs::msg::Point to_point_msg(const TargetPoint &p)
+    {
+        geometry_msgs::msg::Point out;
+        out.x = p.x;
+        out.y = p.y;
+        out.z = p.z;
+        return out;
+    }
+
+    const char *phase_name() const
+    {
+        switch (auto_phase_)
+        {
+        case AutoPhase::IDLE:
+            return "IDLE";
+        case AutoPhase::TARGET_ACQUIRE:
+            return "TARGET_ACQUIRE";
+        case AutoPhase::TRACK_PRE_GRASP:
+            return "TRACK_PRE_GRASP";
+        case AutoPhase::PRE_GRASP_HOLD:
+            return "PRE_GRASP_HOLD";
+        }
+        return "UNKNOWN";
+    }
+
+    bool lookup_current_arm_point(geometry_msgs::msg::Point &out) const
+    {
+        if (!tf_buffer_)
+        {
+            return false;
+        }
+
+        try
+        {
+            const auto tf = tf_buffer_->lookupTransform(
+                arm_base_frame_, end_effector_frame_, tf2::TimePointZero);
+            out.x = tf.transform.translation.x;
+            out.y = tf.transform.translation.y;
+            out.z = tf.transform.translation.z;
+            return true;
+        }
+        catch (const tf2::TransformException &)
+        {
+            return false;
+        }
+    }
+
+    double cartesian_error_to_goal(const geometry_msgs::msg::Point &current) const
+    {
+        if (!has_commanded_goal_point_)
+        {
+            return std::numeric_limits<double>::quiet_NaN();
+        }
+
+        const double dx = commanded_goal_point_.x - current.x;
+        const double dy = commanded_goal_point_.y - current.y;
+        const double dz = commanded_goal_point_.z - current.z;
+        return std::sqrt(dx * dx + dy * dy + dz * dz);
+    }
+
+    double current_target_lock_max_deviation() const
+    {
+        if (target_lock_buffer_.empty())
+        {
+            return std::numeric_limits<double>::quiet_NaN();
+        }
+
+        return max_locked_target_deviation(mean_locked_target());
+    }
+
+    double current_hold_elapsed_sec() const
+    {
+        if (auto_phase_ != AutoPhase::PRE_GRASP_HOLD || hold_start_time_sec_ < 0.0)
+        {
+            return 0.0;
+        }
+        return this->now().seconds() - hold_start_time_sec_;
+    }
+
+    void publish_auto_debug()
+    {
+        gimbal_mani::msg::ArmAutoDebug msg;
+        msg.header.stamp = this->now();
+        msg.header.frame_id = arm_base_frame_;
+
+        msg.auto_enabled = auto_enabled_;
+        msg.phase = phase_name();
+
+        msg.target_valid = target_valid_;
+        msg.has_joint_state = has_joint_state_;
+        msg.has_locked_object_point = has_locked_object_point_;
+
+        msg.base_frame = arm_base_frame_;
+        msg.end_effector_frame = end_effector_frame_;
+
+        msg.object_point_base = to_point_msg(locked_object_point_);
+        msg.pre_grasp_hold_point_base = to_point_msg(pre_grasp_point_);
+        msg.commanded_goal_point_base = to_point_msg(commanded_goal_point_);
+
+        geometry_msgs::msg::Point current_arm_point;
+        msg.has_current_arm_point = lookup_current_arm_point(current_arm_point);
+        msg.current_arm_point_base = current_arm_point;
+        msg.cartesian_error_to_goal_m = msg.has_current_arm_point
+                                            ? cartesian_error_to_goal(current_arm_point)
+                                            : std::numeric_limits<double>::quiet_NaN();
+
+        msg.current_joint_positions = q_meas_;
+        msg.target_joint_positions = goal_;
+        msg.joint_error_sum = arm_goal_error_sum();
+        msg.joint_reach_tol_rad = joint_reach_tol_rad_;
+        msg.joint_goal_reached = arm_goal_reached(joint_reach_tol_rad_);
+
+        msg.hold_elapsed_sec = current_hold_elapsed_sec();
+        msg.hold_time_sec = hold_time_sec_;
+
+        msg.target_lock_samples = static_cast<int32_t>(target_lock_buffer_.size());
+        msg.target_lock_min_samples = target_lock_min_samples_;
+        msg.target_lock_max_deviation_m = current_target_lock_max_deviation();
+        msg.target_lock_pos_tol_m = target_lock_pos_tol_m_;
+
+        pub_auto_debug_->publish(msg);
     }
 
     rcl_interfaces::msg::SetParametersResult on_parameters_changed(const std::vector<rclcpp::Parameter> &params)
@@ -663,6 +834,10 @@ private:
             else if (name == "arm_base_frame")
             {
                 arm_base_frame_ = p.as_string();
+            }
+            else if (name == "end_effector_frame")
+            {
+                end_effector_frame_ = p.as_string();
             }
             else if (name == "min_effective_range")
             {
@@ -696,6 +871,14 @@ private:
             {
                 joint_reach_tol_rad_ = p.as_double();
             }
+            else if (name == "hold_exit_tol_rad")
+            {
+                hold_exit_tol_rad_ = p.as_double();
+            }
+            else if (name == "target_filter_alpha")
+            {
+                target_filter_alpha_ = p.as_double();
+            }
             else if (name == "pub_hz")
             {
                 // runtime change not applied to existing timer period in this implementation
@@ -704,7 +887,7 @@ private:
 
         if (has_locked_object_point_)
         {
-            plan_locked_points();
+            update_pre_grasp_point();
         }
 
         return result;
@@ -717,6 +900,7 @@ private:
     bool auto_enabled_{false};
     double command_time_from_start_sec_{0.1};
     std::string arm_base_frame_{"Base"};
+    std::string end_effector_frame_{"gimbal_mount_link"};
     double min_effective_range_{0.0};
 
     double shoulder_rot_x_{0.0};
@@ -735,14 +919,19 @@ private:
     double target_lock_pos_tol_m_{0.01};
     double hold_time_sec_{0.4};
     double joint_reach_tol_rad_{0.25};
+    double hold_exit_tol_rad_{0.35};
+    double target_filter_alpha_{0.25};
 
     AutoPhase auto_phase_{AutoPhase::IDLE};
     std::deque<TargetSample> target_lock_buffer_;
     TargetPoint locked_object_point_{};
     TargetPoint pre_grasp_point_{};
+    TargetPoint commanded_goal_point_{};
     bool has_locked_object_point_{false};
+    bool has_commanded_goal_point_{false};
     double locked_object_yaw_{0.0};
     double hold_start_time_sec_{-1.0};
+    bool hold_reached_logged_{false};
     double last_valid_vx_{0.0};
     double last_valid_vy_{-1.0};
 
@@ -753,6 +942,7 @@ private:
     bool has_joint_state_{false};
 
     rclcpp::Publisher<trajectory_msgs::msg::JointTrajectory>::SharedPtr pub_arm_traj_;
+    rclcpp::Publisher<gimbal_mani::msg::ArmAutoDebug>::SharedPtr pub_auto_debug_;
     rclcpp::Subscription<gimbal_mani::msg::TargetBearingRange>::SharedPtr sub_target_;
     rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr sub_home_;
     rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr sub_auto_enable_;
