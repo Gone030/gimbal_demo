@@ -15,8 +15,16 @@ geometry_msgs/Point current_arm_point_base
 geometry_msgs/Point commanded_goal_point_base
 geometry_msgs/Point pre_grasp_hold_point_base
 geometry_msgs/Point object_point_base
+geometry_msgs/Point frozen_pre_grasp_point_base
+geometry_msgs/Point tracked_pre_grasp_candidate_base
 
 float64 cartesian_error_to_goal_m
+float64 freeze_cartesian_tol_m
+bool cartesian_goal_reached
+bool freeze_ready
+bool hold_frozen
+float64 hold_target_drift_m
+float64 hold_target_exit_tol_m
 
 float64[] current_joint_positions
 float64[] target_joint_positions

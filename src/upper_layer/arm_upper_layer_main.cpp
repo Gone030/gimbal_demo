@@ -45,13 +45,17 @@ public:
             this->declare_parameter<double>("pre_grasp_distance_m", 0.02);
         pre_grasp_lift_z_m_ =
             this->declare_parameter<double>("pre_grasp_lift_z_m", 0.03);
+        pre_grasp_lateral_offset_m_ =
+            this->declare_parameter<double>("pre_grasp_lateral_offset_m", 0.023);
 
         target_lock_min_samples_ = this->declare_parameter<int>("target_lock_min_samples", 8);
         target_lock_pos_tol_m_ = this->declare_parameter<double>("target_lock_pos_tol_m", 0.01);
         hold_time_sec_ = this->declare_parameter<double>("hold_time_sec", 0.4);
         joint_reach_tol_rad_ = this->declare_parameter<double>("joint_reach_tol_rad", 0.25);
         hold_exit_tol_rad_ = this->declare_parameter<double>("hold_exit_tol_rad", 0.35);
-        target_filter_alpha_ = this->declare_parameter<double>("target_filter_alpha", 0.25);
+        target_filter_alpha_ = this->declare_parameter<double>("target_filter_alpha", 0.05);
+        freeze_cartesian_tol_m_ = this->declare_parameter<double>("freeze_cartesian_tol_m", 0.5);
+        hold_target_exit_tol_m_ = this->declare_parameter<double>("hold_target_exit_tol_m", 0.02);
 
         shoulder_rot_x_ = this->declare_parameter<double>("shoulder_rot_x", 0.0);
         shoulder_rot_y_ = this->declare_parameter<double>("shoulder_rot_y", -0.0452);
@@ -154,10 +158,10 @@ private:
                 command_time_from_start_sec_ = 1.0;
                 auto_phase_ = AutoPhase::TRACK_PRE_GRASP;
 
-                RCLCPP_INFO(this->get_logger(),
-                            "TARGET_ACQUIRE done: obj=(%.3f, %.3f, %.3f) pre=(%.3f, %.3f, %.3f)",
-                            locked_object_point_.x, locked_object_point_.y, locked_object_point_.z,
-                            pre_grasp_point_.x, pre_grasp_point_.y, pre_grasp_point_.z);
+                // RCLCPP_INFO(this->get_logger(),
+                //             "TARGET_ACQUIRE done: obj=(%.3f, %.3f, %.3f) pre=(%.3f, %.3f, %.3f)",
+                //             locked_object_point_.x, locked_object_point_.y, locked_object_point_.z,
+                //             pre_grasp_point_.x, pre_grasp_point_.y, pre_grasp_point_.z);
             }
             break;
         }
@@ -171,8 +175,9 @@ private:
             }
 
             command_time_from_start_sec_ = 1.0;
-            if (arm_goal_reached(joint_reach_tol_rad_))
+            if (freeze_ready())
             {
+                freeze_pre_grasp_point();
                 auto_phase_ = AutoPhase::PRE_GRASP_HOLD;
                 hold_start_time_sec_ = this->now().seconds();
                 hold_reached_logged_ = false;
@@ -182,7 +187,26 @@ private:
 
         case AutoPhase::PRE_GRASP_HOLD:
         {
-            if (!solve_goal_from_point(pre_grasp_point_, locked_object_yaw_))
+            if (!has_frozen_pre_grasp_point_)
+            {
+                freeze_pre_grasp_point();
+            }
+
+            if (has_tracked_pre_grasp_candidate_)
+            {
+                const double drift = point_distance(tracked_pre_grasp_candidate_, frozen_pre_grasp_point_);
+                if (drift > hold_target_exit_tol_m_)
+                {
+                    pre_grasp_point_ = tracked_pre_grasp_candidate_;
+                    has_frozen_pre_grasp_point_ = false;
+                    auto_phase_ = AutoPhase::TRACK_PRE_GRASP;
+                    hold_start_time_sec_ = -1.0;
+                    hold_reached_logged_ = false;
+                    break;
+                }
+            }
+
+            if (!solve_goal_from_point(frozen_pre_grasp_point_, locked_object_yaw_))
             {
                 target_valid_ = false;
                 break;
@@ -253,7 +277,8 @@ private:
         if (auto_phase_ == AutoPhase::TRACK_PRE_GRASP ||
             auto_phase_ == AutoPhase::PRE_GRASP_HOLD)
         {
-            update_tracked_target({target_x, target_y, target_z, msg.object_yaw});
+            update_tracked_target({target_x, target_y, target_z, msg.object_yaw},
+                                  auto_phase_ == AutoPhase::PRE_GRASP_HOLD);
         }
     }
 
@@ -377,15 +402,15 @@ private:
             uy_out = u_base.y() / n;
             uz_out = u_base.z() / n;
 
-            RCLCPP_INFO_THROTTLE(
-                this->get_logger(), *this->get_clock(), 500,
-                "target_tf: frame=%s->%s yaw=%.3f pitch=%.3f range=%.3f range_use=%.3f | "
-                "p_sensor=(%.3f,%.3f,%.3f) p_base=(%.3f,%.3f,%.3f) u_base=(%.3f,%.3f,%.3f)",
-                msg.header.frame_id.c_str(), arm_base_frame_.c_str(),
-                msg.yaw, msg.pitch, msg.range, range_use,
-                p_sensor.point.x, p_sensor.point.y, p_sensor.point.z,
-                p_base.point.x, p_base.point.y, p_base.point.z,
-                ux_out, uy_out, uz_out);
+            // RCLCPP_INFO_THROTTLE(
+            //     this->get_logger(), *this->get_clock(), 500,
+            //     "target_tf: frame=%s->%s yaw=%.3f pitch=%.3f range=%.3f range_use=%.3f | "
+            //     "p_sensor=(%.3f,%.3f,%.3f) p_base=(%.3f,%.3f,%.3f) u_base=(%.3f,%.3f,%.3f)",
+            //     msg.header.frame_id.c_str(), arm_base_frame_.c_str(),
+            //     msg.yaw, msg.pitch, msg.range, range_use,
+            //     p_sensor.point.x, p_sensor.point.y, p_sensor.point.z,
+            //     p_base.point.x, p_base.point.y, p_base.point.z,
+            //     ux_out, uy_out, uz_out);
         }
         catch (const tf2::TransformException &ex)
         {
@@ -425,6 +450,8 @@ private:
         target_lock_buffer_.clear();
         has_locked_object_point_ = false;
         has_commanded_goal_point_ = false;
+        has_frozen_pre_grasp_point_ = false;
+        has_tracked_pre_grasp_candidate_ = false;
         hold_start_time_sec_ = -1.0;
         hold_reached_logged_ = false;
         target_valid_ = false;
@@ -494,7 +521,7 @@ private:
         return update_pre_grasp_point();
     }
 
-    void update_tracked_target(const TargetSample &sample)
+    void update_tracked_target(const TargetSample &sample, bool candidate_only)
     {
         const double alpha = clamp(target_filter_alpha_, 0.0, 1.0);
         if (!has_locked_object_point_)
@@ -514,13 +541,30 @@ private:
             locked_object_yaw_ = wrap_pi(locked_object_yaw_);
         }
 
-        update_pre_grasp_point();
+        if (candidate_only)
+        {
+            tracked_pre_grasp_candidate_ = compute_pre_grasp_point(locked_object_point_);
+            has_tracked_pre_grasp_candidate_ = true;
+        }
+        else
+        {
+            update_pre_grasp_point();
+        }
     }
 
     bool update_pre_grasp_point()
     {
-        double vx = locked_object_point_.x;
-        double vy = locked_object_point_.y;
+        pre_grasp_point_ = compute_pre_grasp_point(locked_object_point_);
+        tracked_pre_grasp_candidate_ = pre_grasp_point_;
+        has_tracked_pre_grasp_candidate_ = true;
+        return true;
+    }
+
+    TargetPoint compute_pre_grasp_point(const TargetPoint &object_point)
+    {
+        TargetPoint out;
+        double vx = object_point.x;
+        double vy = object_point.y;
         const double nxy = std::hypot(vx, vy);
         if (nxy > 1e-6)
         {
@@ -535,17 +579,20 @@ private:
             if (last_n <= 1e-6)
             {
                 RCLCPP_WARN(this->get_logger(), "plan_locked_points: horizontal approach axis is invalid.");
-                return false;
+                return out;
             }
             vx = last_valid_vx_;
             vy = last_valid_vy_;
         }
 
-        pre_grasp_point_.x = locked_object_point_.x - pre_grasp_distance_m_ * vx;
-        pre_grasp_point_.y = locked_object_point_.y - pre_grasp_distance_m_ * vy;
-        pre_grasp_point_.z = locked_object_point_.z + pre_grasp_lift_z_m_;
+        const double left_x = -vy;
+        const double left_y = vx;
 
-        return true;
+        out.x = object_point.x - pre_grasp_distance_m_ * vx + pre_grasp_lateral_offset_m_ * left_x;
+        out.y = object_point.y - pre_grasp_distance_m_ * vy + pre_grasp_lateral_offset_m_ * left_y;
+        out.z = object_point.z + pre_grasp_lift_z_m_;
+
+        return out;
     }
 
     bool solve_goal_from_point(const TargetPoint &p, double wrist_roll_ref)
@@ -570,10 +617,10 @@ private:
         double rho = z_plane - shoulder_pitch_offset_y_;
         double z2 = y_plane - shoulder_pitch_offset_z_;
 
-        RCLCPP_INFO_THROTTLE(
-            this->get_logger(), *this->get_clock(), 500,
-            "solve_goal: p=(%.3f,%.3f,%.3f) rho=%.3f z2=%.3f",
-            x, y, z, rho, z2);
+        // RCLCPP_INFO_THROTTLE(
+        //     this->get_logger(), *this->get_clock(), 500,
+        //     "solve_goal: p=(%.3f,%.3f,%.3f) rho=%.3f z2=%.3f",
+        //     x, y, z, rho, z2);
 
         if (saturate_reach_)
         {
@@ -682,6 +729,41 @@ private:
         return arm_goal_error_sum() <= tol;
     }
 
+    static double point_distance(const TargetPoint &a, const TargetPoint &b)
+    {
+        const double dx = a.x - b.x;
+        const double dy = a.y - b.y;
+        const double dz = a.z - b.z;
+        return std::sqrt(dx * dx + dy * dy + dz * dz);
+    }
+
+    bool cartesian_goal_reached(double tol) const
+    {
+        geometry_msgs::msg::Point current;
+        if (!lookup_current_arm_point(current))
+        {
+            return false;
+        }
+
+        const double err = cartesian_error_to_goal(current);
+        return std::isfinite(err) && err <= tol;
+    }
+
+    bool freeze_ready() const
+    {
+        return has_locked_object_point_ &&
+               arm_goal_reached(joint_reach_tol_rad_) &&
+               cartesian_goal_reached(freeze_cartesian_tol_m_);
+    }
+
+    void freeze_pre_grasp_point()
+    {
+        frozen_pre_grasp_point_ = pre_grasp_point_;
+        has_frozen_pre_grasp_point_ = true;
+        tracked_pre_grasp_candidate_ = pre_grasp_point_;
+        has_tracked_pre_grasp_candidate_ = true;
+    }
+
     static double nearest_equivalent_angle(double target, double reference)
     {
         return reference + wrap_pi(target - reference);
@@ -766,6 +848,16 @@ private:
         return this->now().seconds() - hold_start_time_sec_;
     }
 
+    double current_hold_target_drift() const
+    {
+        if (!has_frozen_pre_grasp_point_ || !has_tracked_pre_grasp_candidate_)
+        {
+            return std::numeric_limits<double>::quiet_NaN();
+        }
+
+        return point_distance(tracked_pre_grasp_candidate_, frozen_pre_grasp_point_);
+    }
+
     void publish_auto_debug()
     {
         gimbal_mani::msg::ArmAutoDebug msg;
@@ -785,6 +877,8 @@ private:
         msg.object_point_base = to_point_msg(locked_object_point_);
         msg.pre_grasp_hold_point_base = to_point_msg(pre_grasp_point_);
         msg.commanded_goal_point_base = to_point_msg(commanded_goal_point_);
+        msg.frozen_pre_grasp_point_base = to_point_msg(frozen_pre_grasp_point_);
+        msg.tracked_pre_grasp_candidate_base = to_point_msg(tracked_pre_grasp_candidate_);
 
         geometry_msgs::msg::Point current_arm_point;
         msg.has_current_arm_point = lookup_current_arm_point(current_arm_point);
@@ -792,6 +886,16 @@ private:
         msg.cartesian_error_to_goal_m = msg.has_current_arm_point
                                             ? cartesian_error_to_goal(current_arm_point)
                                             : std::numeric_limits<double>::quiet_NaN();
+        msg.freeze_cartesian_tol_m = freeze_cartesian_tol_m_;
+        msg.cartesian_goal_reached = msg.has_current_arm_point &&
+                                     std::isfinite(msg.cartesian_error_to_goal_m) &&
+                                     msg.cartesian_error_to_goal_m <= freeze_cartesian_tol_m_;
+        msg.freeze_ready = has_locked_object_point_ &&
+                           arm_goal_reached(joint_reach_tol_rad_) &&
+                           msg.cartesian_goal_reached;
+        msg.hold_frozen = has_frozen_pre_grasp_point_;
+        msg.hold_target_drift_m = current_hold_target_drift();
+        msg.hold_target_exit_tol_m = hold_target_exit_tol_m_;
 
         msg.current_joint_positions = q_meas_;
         msg.target_joint_positions = goal_;
@@ -855,6 +959,10 @@ private:
             {
                 pre_grasp_lift_z_m_ = p.as_double();
             }
+            else if (name == "pre_grasp_lateral_offset_m")
+            {
+                pre_grasp_lateral_offset_m_ = p.as_double();
+            }
             else if (name == "target_lock_min_samples")
             {
                 target_lock_min_samples_ = p.as_int();
@@ -879,6 +987,14 @@ private:
             {
                 target_filter_alpha_ = p.as_double();
             }
+            else if (name == "freeze_cartesian_tol_m")
+            {
+                freeze_cartesian_tol_m_ = p.as_double();
+            }
+            else if (name == "hold_target_exit_tol_m")
+            {
+                hold_target_exit_tol_m_ = p.as_double();
+            }
             else if (name == "pub_hz")
             {
                 // runtime change not applied to existing timer period in this implementation
@@ -887,7 +1003,15 @@ private:
 
         if (has_locked_object_point_)
         {
-            update_pre_grasp_point();
+            if (has_frozen_pre_grasp_point_)
+            {
+                tracked_pre_grasp_candidate_ = compute_pre_grasp_point(locked_object_point_);
+                has_tracked_pre_grasp_candidate_ = true;
+            }
+            else
+            {
+                update_pre_grasp_point();
+            }
         }
 
         return result;
@@ -914,6 +1038,7 @@ private:
 
     double pre_grasp_distance_m_{0.08};
     double pre_grasp_lift_z_m_{0.01};
+    double pre_grasp_lateral_offset_m_{0.0};
 
     int target_lock_min_samples_{8};
     double target_lock_pos_tol_m_{0.01};
@@ -921,14 +1046,20 @@ private:
     double joint_reach_tol_rad_{0.25};
     double hold_exit_tol_rad_{0.35};
     double target_filter_alpha_{0.25};
+    double freeze_cartesian_tol_m_{0.5};
+    double hold_target_exit_tol_m_{0.02};
 
     AutoPhase auto_phase_{AutoPhase::IDLE};
     std::deque<TargetSample> target_lock_buffer_;
     TargetPoint locked_object_point_{};
     TargetPoint pre_grasp_point_{};
     TargetPoint commanded_goal_point_{};
+    TargetPoint frozen_pre_grasp_point_{};
+    TargetPoint tracked_pre_grasp_candidate_{};
     bool has_locked_object_point_{false};
     bool has_commanded_goal_point_{false};
+    bool has_frozen_pre_grasp_point_{false};
+    bool has_tracked_pre_grasp_candidate_{false};
     double locked_object_yaw_{0.0};
     double hold_start_time_sec_{-1.0};
     bool hold_reached_logged_{false};
