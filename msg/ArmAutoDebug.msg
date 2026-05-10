@@ -25,6 +25,22 @@ bool freeze_ready
 bool hold_frozen
 float64 hold_target_drift_m
 float64 hold_target_exit_tol_m
+bool grasp_start_requested
+bool has_tof_range
+float64 tof_range_m
+float64 tof_age_sec
+float64 desired_grasp_range_m
+float64 gripper_inside_range_m
+float64 gripper_inner_extra_approach_m
+float64 tof_approach_step_m
+float64 tof_forward_distance_m
+bool tof_target_inside_gripper
+bool has_tof_approach_point
+geometry_msgs/Point tof_approach_point_base
+bool has_frozen_pre_grasp_joints
+float64 shoulder_pitch_delta_from_hold_rad
+float64 elbow_delta_from_hold_rad
+float64 shoulder_to_elbow_delta_ratio
 
 float64[] current_joint_positions
 float64[] target_joint_positions
