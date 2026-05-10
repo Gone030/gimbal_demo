@@ -52,7 +52,7 @@ def generate_launch_description():
             )
         ),
         launch_arguments={'world': world_path,
-                          'gui': 'false',
+                          'gui': 'true',
                           'verbose': 'true'
                           }.items(),
     )
