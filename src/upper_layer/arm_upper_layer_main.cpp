@@ -5,16 +5,20 @@
 #include <chrono>
 #include <algorithm>
 #include <limits>
+#include <sstream>
+#include <iomanip>
 
 #include <rclcpp/rclcpp.hpp>
 #include <geometry_msgs/msg/point.hpp>
 #include <geometry_msgs/msg/point_stamped.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
+#include <sensor_msgs/msg/laser_scan.hpp>
 #include <trajectory_msgs/msg/joint_trajectory.hpp>
 #include <trajectory_msgs/msg/joint_trajectory_point.hpp>
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/empty.hpp>
+#include <std_msgs/msg/string.hpp>
 #include <rcl_interfaces/msg/set_parameters_result.hpp>
 #include <tf2/exceptions.h>
 #include <tf2/LinearMath/Matrix3x3.h>
@@ -56,6 +60,20 @@ public:
         target_filter_alpha_ = this->declare_parameter<double>("target_filter_alpha", 0.05);
         freeze_cartesian_tol_m_ = this->declare_parameter<double>("freeze_cartesian_tol_m", 0.5);
         hold_target_exit_tol_m_ = this->declare_parameter<double>("hold_target_exit_tol_m", 0.02);
+        desired_grasp_range_m_ = this->declare_parameter<double>("desired_grasp_range_m", 0.03);
+        gripper_inside_range_m_ = this->declare_parameter<double>("gripper_inside_range_m", 0.035);
+        gripper_inner_extra_approach_m_ = this->declare_parameter<double>("gripper_inner_extra_approach_m", 0.02);
+        tof_approach_step_m_ = this->declare_parameter<double>("tof_approach_step_m", 0.01);
+        min_forward_approach_m_ = this->declare_parameter<double>("min_forward_approach_m", 0.0);
+        max_forward_approach_m_ = this->declare_parameter<double>("max_forward_approach_m", 0.2);
+        tof_timeout_sec_ = this->declare_parameter<double>("tof_timeout_sec", 0.5);
+        gripper_open_pos_ = this->declare_parameter<double>("gripper_open_pos", 0.5);
+        gripper_close_pos_ = this->declare_parameter<double>("gripper_close_pos", 0.0);
+        gripper_action_time_sec_ = this->declare_parameter<double>("gripper_action_time_sec", 0.4);
+        approach_reach_tol_rad_ = this->declare_parameter<double>("approach_reach_tol_rad", 0.25);
+        tof_ik_elbow_only_penalty_ = this->declare_parameter<double>("tof_ik_elbow_only_penalty", 8.0);
+        tof_ik_shoulder_bonus_ = this->declare_parameter<double>("tof_ik_shoulder_bonus", 1.0);
+        tof_ik_shoulder_balance_ratio_ = this->declare_parameter<double>("tof_ik_shoulder_balance_ratio", 0.8);
 
         shoulder_rot_x_ = this->declare_parameter<double>("shoulder_rot_x", 0.0);
         shoulder_rot_y_ = this->declare_parameter<double>("shoulder_rot_y", -0.0452);
@@ -78,6 +96,8 @@ public:
             "/joint_trajectory_in/arm", 10);
         pub_auto_debug_ = this->create_publisher<gimbal_mani::msg::ArmAutoDebug>(
             "/arm/auto_debug", 10);
+        pub_auto_status_ = this->create_publisher<std_msgs::msg::String>(
+            "/arm/auto_status", 10);
 
         sub_target_ = this->create_subscription<gimbal_mani::msg::TargetBearingRange>(
             "/target", 10,
@@ -91,9 +111,17 @@ public:
             "/arm/auto_enable", 10,
             std::bind(&Arm_UpperLayerMain::on_auto_enable, this, std::placeholders::_1));
 
+        sub_grasp_start_ = this->create_subscription<std_msgs::msg::Empty>(
+            "/arm/grasp_start", 10,
+            std::bind(&Arm_UpperLayerMain::on_grasp_start, this, std::placeholders::_1));
+
         sub_joint_state_ = this->create_subscription<sensor_msgs::msg::JointState>(
             "/joint_states", rclcpp::SensorDataQoS(),
             std::bind(&Arm_UpperLayerMain::on_joint_state, this, std::placeholders::_1));
+
+        sub_tof_ = this->create_subscription<sensor_msgs::msg::LaserScan>(
+            "/gimbal/tof_distance", rclcpp::SensorDataQoS(),
+            std::bind(&Arm_UpperLayerMain::on_tof_scan, this, std::placeholders::_1));
 
         tf_buffer_ = std::make_unique<tf2_ros::Buffer>(this->get_clock());
         tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
@@ -114,6 +142,10 @@ private:
         TARGET_ACQUIRE,
         TRACK_PRE_GRASP,
         PRE_GRASP_HOLD,
+        GRIPPER_OPEN,
+        TOF_APPROACH,
+        GRIPPER_CLOSE,
+        GRASP_HOLD,
     };
 
     struct TargetSample
@@ -137,6 +169,7 @@ private:
         {
             publish_current_goal();
             publish_auto_debug();
+            publish_auto_status();
             return;
         }
 
@@ -227,12 +260,99 @@ private:
                 RCLCPP_INFO(this->get_logger(), "PRE_GRASP_HOLD reached.");
                 hold_reached_logged_ = true;
             }
+            if (hold_reached_logged_ && grasp_start_requested_)
+            {
+                grasp_start_requested_ = false;
+                auto_phase_ = AutoPhase::GRIPPER_OPEN;
+                phase_start_time_sec_ = this->now().seconds();
+            }
+            break;
+        }
+
+        case AutoPhase::GRIPPER_OPEN:
+        {
+            if (!solve_goal_from_point(frozen_pre_grasp_point_, locked_object_yaw_))
+            {
+                target_valid_ = false;
+                break;
+            }
+
+            goal_[5] = gripper_open_pos_;
+            command_time_from_start_sec_ = gripper_action_time_sec_;
+            if (elapsed_in_phase() >= gripper_action_time_sec_ &&
+                plan_tof_approach_point())
+            {
+                auto_phase_ = AutoPhase::TOF_APPROACH;
+                phase_start_time_sec_ = this->now().seconds();
+            }
+            break;
+        }
+
+        case AutoPhase::TOF_APPROACH:
+        {
+            if (!has_tof_approach_point_)
+            {
+                if (!plan_tof_approach_point())
+                {
+                    target_valid_ = false;
+                    break;
+                }
+            }
+
+            if (!solve_goal_from_point(tof_approach_point_, locked_object_yaw_))
+            {
+                target_valid_ = false;
+                break;
+            }
+
+            goal_[5] = gripper_open_pos_;
+            command_time_from_start_sec_ = 1.0;
+            if (tof_target_inside_gripper() && arm_goal_reached(approach_reach_tol_rad_))
+            {
+                auto_phase_ = AutoPhase::GRIPPER_CLOSE;
+                phase_start_time_sec_ = this->now().seconds();
+            }
+            else if (arm_goal_reached(approach_reach_tol_rad_))
+            {
+                extend_tof_approach_point();
+            }
+            break;
+        }
+
+        case AutoPhase::GRIPPER_CLOSE:
+        {
+            if (!solve_goal_from_point(tof_approach_point_, locked_object_yaw_))
+            {
+                target_valid_ = false;
+                break;
+            }
+
+            goal_[5] = gripper_close_pos_;
+            command_time_from_start_sec_ = gripper_action_time_sec_;
+            if (elapsed_in_phase() >= gripper_action_time_sec_)
+            {
+                auto_phase_ = AutoPhase::GRASP_HOLD;
+            }
+            break;
+        }
+
+        case AutoPhase::GRASP_HOLD:
+        {
+            if (!solve_goal_from_point(tof_approach_point_, locked_object_yaw_))
+            {
+                target_valid_ = false;
+                break;
+            }
+
+            goal_[5] = gripper_close_pos_;
+            command_time_from_start_sec_ = 1.0;
             break;
         }
         }
 
         publish_current_goal();
         publish_auto_debug();
+        publish_auto_status();
     }
 
     void on_target(const gimbal_mani::msg::TargetBearingRange &msg)
@@ -314,6 +434,42 @@ private:
             reset_auto_sequence();
             target_valid_ = false;
         }
+    }
+
+    void on_grasp_start(const std_msgs::msg::Empty &)
+    {
+        if (auto_enabled_ &&
+            auto_phase_ == AutoPhase::PRE_GRASP_HOLD &&
+            has_frozen_pre_grasp_point_)
+        {
+            grasp_start_requested_ = true;
+        }
+    }
+
+    void on_tof_scan(const sensor_msgs::msg::LaserScan &msg)
+    {
+        if (msg.ranges.empty())
+        {
+            return;
+        }
+
+        const float r0 = msg.ranges[0];
+        if (!std::isfinite(r0))
+        {
+            return;
+        }
+        if (std::isfinite(msg.range_min) && r0 < msg.range_min)
+        {
+            return;
+        }
+        if (std::isfinite(msg.range_max) && r0 > msg.range_max)
+        {
+            return;
+        }
+
+        latest_tof_range_m_ = static_cast<double>(r0);
+        last_tof_time_sec_ = this->now().seconds();
+        has_tof_range_ = true;
     }
 
     void on_joint_state(const sensor_msgs::msg::JointState &msg)
@@ -452,6 +608,11 @@ private:
         has_commanded_goal_point_ = false;
         has_frozen_pre_grasp_point_ = false;
         has_tracked_pre_grasp_candidate_ = false;
+        has_frozen_pre_grasp_joints_ = false;
+        has_frozen_approach_axis_ = false;
+        has_tof_approach_point_ = false;
+        grasp_start_requested_ = false;
+        phase_start_time_sec_ = -1.0;
         hold_start_time_sec_ = -1.0;
         hold_reached_logged_ = false;
         target_valid_ = false;
@@ -672,8 +833,24 @@ private:
         {
             const double w_sh = 0.7;
             const double w_el = 1.1;
-            return w_sh * std::fabs(a1 - prev_shoulder_pitch) +
-                   w_el * std::fabs(a2 - prev_elbow);
+            double value = w_sh * std::fabs(a1 - prev_shoulder_pitch) +
+                           w_el * std::fabs(a2 - prev_elbow);
+
+            if (use_tof_approach_ik_bias() && has_frozen_pre_grasp_joints_ &&
+                frozen_pre_grasp_joint_positions_.size() > 2)
+            {
+                const double shoulder_delta =
+                    std::fabs(wrap_pi(a1 - frozen_pre_grasp_joint_positions_[1]));
+                const double elbow_delta =
+                    std::fabs(wrap_pi(a2 - frozen_pre_grasp_joint_positions_[2]));
+                const double elbow_only =
+                    std::max(0.0, elbow_delta - tof_ik_shoulder_balance_ratio_ * shoulder_delta);
+
+                value += tof_ik_elbow_only_penalty_ * elbow_only;
+                value -= tof_ik_shoulder_bonus_ * shoulder_delta;
+            }
+
+            return value;
         };
 
         double shoulder_pitch_sel = 0.0;
@@ -756,12 +933,114 @@ private:
                cartesian_goal_reached(freeze_cartesian_tol_m_);
     }
 
+    bool use_tof_approach_ik_bias() const
+    {
+        return auto_phase_ == AutoPhase::TOF_APPROACH ||
+               auto_phase_ == AutoPhase::GRIPPER_CLOSE ||
+               auto_phase_ == AutoPhase::GRASP_HOLD;
+    }
+
     void freeze_pre_grasp_point()
     {
         frozen_pre_grasp_point_ = pre_grasp_point_;
         has_frozen_pre_grasp_point_ = true;
         tracked_pre_grasp_candidate_ = pre_grasp_point_;
         has_tracked_pre_grasp_candidate_ = true;
+        frozen_pre_grasp_joint_positions_ = q_meas_;
+        has_frozen_pre_grasp_joints_ = frozen_pre_grasp_joint_positions_.size() > 2;
+
+        const double n = std::hypot(last_valid_vx_, last_valid_vy_);
+        if (n > 1e-6)
+        {
+            frozen_approach_axis_x_ = last_valid_vx_ / n;
+            frozen_approach_axis_y_ = last_valid_vy_ / n;
+            has_frozen_approach_axis_ = true;
+        }
+    }
+
+    double elapsed_in_phase() const
+    {
+        if (phase_start_time_sec_ < 0.0)
+        {
+            return 0.0;
+        }
+        return this->now().seconds() - phase_start_time_sec_;
+    }
+
+    double tof_age_sec() const
+    {
+        if (!has_tof_range_ || last_tof_time_sec_ < 0.0)
+        {
+            return std::numeric_limits<double>::quiet_NaN();
+        }
+        return this->now().seconds() - last_tof_time_sec_;
+    }
+
+    bool tof_range_valid() const
+    {
+        const double age = tof_age_sec();
+        return has_tof_range_ &&
+               std::isfinite(latest_tof_range_m_) &&
+               std::isfinite(age) &&
+               age <= tof_timeout_sec_;
+    }
+
+    bool plan_tof_approach_point()
+    {
+        if (!has_frozen_pre_grasp_point_ ||
+            !has_frozen_approach_axis_ ||
+            !tof_range_valid())
+        {
+            return false;
+        }
+
+        tof_forward_distance_m_ = clamp(
+            latest_tof_range_m_ - desired_grasp_range_m_ + gripper_inner_extra_approach_m_,
+            min_forward_approach_m_,
+            max_forward_approach_m_);
+
+        update_tof_approach_point_from_forward_distance();
+        has_tof_approach_point_ = true;
+        return true;
+    }
+
+    bool extend_tof_approach_point()
+    {
+        if (!has_frozen_pre_grasp_point_ ||
+            !has_frozen_approach_axis_ ||
+            tof_target_inside_gripper())
+        {
+            return false;
+        }
+
+        const double next_forward = clamp(
+            tof_forward_distance_m_ + std::max(0.0, tof_approach_step_m_),
+            min_forward_approach_m_,
+            max_forward_approach_m_);
+        if (next_forward <= tof_forward_distance_m_ + 1e-6)
+        {
+            return false;
+        }
+
+        tof_forward_distance_m_ = next_forward;
+        update_tof_approach_point_from_forward_distance();
+        has_tof_approach_point_ = true;
+        return true;
+    }
+
+    void update_tof_approach_point_from_forward_distance()
+    {
+        tof_approach_point_.x =
+            frozen_pre_grasp_point_.x + tof_forward_distance_m_ * frozen_approach_axis_x_;
+        tof_approach_point_.y =
+            frozen_pre_grasp_point_.y + tof_forward_distance_m_ * frozen_approach_axis_y_;
+        tof_approach_point_.z = frozen_pre_grasp_point_.z;
+    }
+
+    bool tof_target_inside_gripper() const
+    {
+        return tof_range_valid() &&
+               latest_tof_range_m_ <= gripper_inside_range_m_;
     }
 
     static double nearest_equivalent_angle(double target, double reference)
@@ -790,6 +1069,14 @@ private:
             return "TRACK_PRE_GRASP";
         case AutoPhase::PRE_GRASP_HOLD:
             return "PRE_GRASP_HOLD";
+        case AutoPhase::GRIPPER_OPEN:
+            return "GRIPPER_OPEN";
+        case AutoPhase::TOF_APPROACH:
+            return "TOF_APPROACH";
+        case AutoPhase::GRIPPER_CLOSE:
+            return "GRIPPER_CLOSE";
+        case AutoPhase::GRASP_HOLD:
+            return "GRASP_HOLD";
         }
         return "UNKNOWN";
     }
@@ -858,6 +1145,44 @@ private:
         return point_distance(tracked_pre_grasp_candidate_, frozen_pre_grasp_point_);
     }
 
+    double shoulder_pitch_delta_from_hold() const
+    {
+        if (!has_frozen_pre_grasp_joints_ || frozen_pre_grasp_joint_positions_.size() <= 1)
+        {
+            return std::numeric_limits<double>::quiet_NaN();
+        }
+
+        return wrap_pi(goal_[1] - frozen_pre_grasp_joint_positions_[1]);
+    }
+
+    double elbow_delta_from_hold() const
+    {
+        if (!has_frozen_pre_grasp_joints_ || frozen_pre_grasp_joint_positions_.size() <= 2)
+        {
+            return std::numeric_limits<double>::quiet_NaN();
+        }
+
+        return wrap_pi(goal_[2] - frozen_pre_grasp_joint_positions_[2]);
+    }
+
+    double shoulder_to_elbow_delta_ratio() const
+    {
+        const double d_sh = shoulder_pitch_delta_from_hold();
+        const double d_el = elbow_delta_from_hold();
+        if (!std::isfinite(d_sh) || !std::isfinite(d_el))
+        {
+            return std::numeric_limits<double>::quiet_NaN();
+        }
+
+        const double abs_el = std::fabs(d_el);
+        if (abs_el <= 1e-6)
+        {
+            return std::numeric_limits<double>::quiet_NaN();
+        }
+
+        return std::fabs(d_sh) / abs_el;
+    }
+
     void publish_auto_debug()
     {
         gimbal_mani::msg::ArmAutoDebug msg;
@@ -896,6 +1221,22 @@ private:
         msg.hold_frozen = has_frozen_pre_grasp_point_;
         msg.hold_target_drift_m = current_hold_target_drift();
         msg.hold_target_exit_tol_m = hold_target_exit_tol_m_;
+        msg.grasp_start_requested = grasp_start_requested_;
+        msg.has_tof_range = tof_range_valid();
+        msg.tof_range_m = latest_tof_range_m_;
+        msg.tof_age_sec = tof_age_sec();
+        msg.desired_grasp_range_m = desired_grasp_range_m_;
+        msg.gripper_inside_range_m = gripper_inside_range_m_;
+        msg.gripper_inner_extra_approach_m = gripper_inner_extra_approach_m_;
+        msg.tof_approach_step_m = tof_approach_step_m_;
+        msg.tof_forward_distance_m = tof_forward_distance_m_;
+        msg.tof_target_inside_gripper = tof_target_inside_gripper();
+        msg.has_tof_approach_point = has_tof_approach_point_;
+        msg.tof_approach_point_base = to_point_msg(tof_approach_point_);
+        msg.has_frozen_pre_grasp_joints = has_frozen_pre_grasp_joints_;
+        msg.shoulder_pitch_delta_from_hold_rad = shoulder_pitch_delta_from_hold();
+        msg.elbow_delta_from_hold_rad = elbow_delta_from_hold();
+        msg.shoulder_to_elbow_delta_ratio = shoulder_to_elbow_delta_ratio();
 
         msg.current_joint_positions = q_meas_;
         msg.target_joint_positions = goal_;
@@ -912,6 +1253,45 @@ private:
         msg.target_lock_pos_tol_m = target_lock_pos_tol_m_;
 
         pub_auto_debug_->publish(msg);
+    }
+
+    void publish_auto_status()
+    {
+        geometry_msgs::msg::Point current_arm_point;
+        const bool has_current = lookup_current_arm_point(current_arm_point);
+        const double cart_err = has_current
+                                    ? cartesian_error_to_goal(current_arm_point)
+                                    : std::numeric_limits<double>::quiet_NaN();
+        const double hold_drift = current_hold_target_drift();
+
+        std::ostringstream ss;
+        ss << std::fixed << std::setprecision(3)
+           << "phase=" << phase_name()
+           << " auto=" << (auto_enabled_ ? 1 : 0)
+           << " frozen=" << (has_frozen_pre_grasp_point_ ? 1 : 0)
+           << " grasp_req=" << (grasp_start_requested_ ? 1 : 0)
+           << " tof_ok=" << (tof_range_valid() ? 1 : 0)
+           << " inside=" << (tof_target_inside_gripper() ? 1 : 0)
+           << " tof=" << latest_tof_range_m_
+           << " fwd=" << tof_forward_distance_m_
+           << " d_sh=" << shoulder_pitch_delta_from_hold()
+           << " d_el=" << elbow_delta_from_hold()
+           << " sh_el=" << shoulder_to_elbow_delta_ratio()
+           << " joint_err=" << arm_goal_error_sum()
+           << " cart_err=" << cart_err
+           << " drift=" << hold_drift;
+
+        if (has_commanded_goal_point_)
+        {
+            ss << " goal=("
+               << commanded_goal_point_.x << ","
+               << commanded_goal_point_.y << ","
+               << commanded_goal_point_.z << ")";
+        }
+
+        std_msgs::msg::String msg;
+        msg.data = ss.str();
+        pub_auto_status_->publish(msg);
     }
 
     rcl_interfaces::msg::SetParametersResult on_parameters_changed(const std::vector<rclcpp::Parameter> &params)
@@ -995,6 +1375,62 @@ private:
             {
                 hold_target_exit_tol_m_ = p.as_double();
             }
+            else if (name == "desired_grasp_range_m")
+            {
+                desired_grasp_range_m_ = p.as_double();
+            }
+            else if (name == "gripper_inside_range_m")
+            {
+                gripper_inside_range_m_ = p.as_double();
+            }
+            else if (name == "gripper_inner_extra_approach_m")
+            {
+                gripper_inner_extra_approach_m_ = p.as_double();
+            }
+            else if (name == "tof_approach_step_m")
+            {
+                tof_approach_step_m_ = p.as_double();
+            }
+            else if (name == "min_forward_approach_m")
+            {
+                min_forward_approach_m_ = p.as_double();
+            }
+            else if (name == "max_forward_approach_m")
+            {
+                max_forward_approach_m_ = p.as_double();
+            }
+            else if (name == "tof_timeout_sec")
+            {
+                tof_timeout_sec_ = p.as_double();
+            }
+            else if (name == "gripper_open_pos")
+            {
+                gripper_open_pos_ = p.as_double();
+            }
+            else if (name == "gripper_close_pos")
+            {
+                gripper_close_pos_ = p.as_double();
+            }
+            else if (name == "gripper_action_time_sec")
+            {
+                gripper_action_time_sec_ = p.as_double();
+            }
+            else if (name == "approach_reach_tol_rad")
+            {
+                approach_reach_tol_rad_ = p.as_double();
+            }
+            else if (name == "tof_ik_elbow_only_penalty")
+            {
+                tof_ik_elbow_only_penalty_ = p.as_double();
+            }
+            else if (name == "tof_ik_shoulder_bonus")
+            {
+                tof_ik_shoulder_bonus_ = p.as_double();
+            }
+            else if (name == "tof_ik_shoulder_balance_ratio")
+            {
+                tof_ik_shoulder_balance_ratio_ = p.as_double();
+            }
             else if (name == "pub_hz")
             {
                 // runtime change not applied to existing timer period in this implementation
@@ -1048,6 +1484,20 @@ private:
     double target_filter_alpha_{0.25};
     double freeze_cartesian_tol_m_{0.5};
     double hold_target_exit_tol_m_{0.02};
+    double desired_grasp_range_m_{0.03};
+    double gripper_inside_range_m_{0.035};
+    double gripper_inner_extra_approach_m_{0.02};
+    double tof_approach_step_m_{0.01};
+    double min_forward_approach_m_{0.0};
+    double max_forward_approach_m_{0.10};
+    double tof_timeout_sec_{0.5};
+    double gripper_open_pos_{0.5};
+    double gripper_close_pos_{0.0};
+    double gripper_action_time_sec_{0.4};
+    double approach_reach_tol_rad_{0.25};
+    double tof_ik_elbow_only_penalty_{8.0};
+    double tof_ik_shoulder_bonus_{1.0};
+    double tof_ik_shoulder_balance_ratio_{0.8};
 
     AutoPhase auto_phase_{AutoPhase::IDLE};
     std::deque<TargetSample> target_lock_buffer_;
@@ -1056,13 +1506,26 @@ private:
     TargetPoint commanded_goal_point_{};
     TargetPoint frozen_pre_grasp_point_{};
     TargetPoint tracked_pre_grasp_candidate_{};
+    TargetPoint tof_approach_point_{};
+    std::vector<double> frozen_pre_grasp_joint_positions_;
     bool has_locked_object_point_{false};
     bool has_commanded_goal_point_{false};
     bool has_frozen_pre_grasp_point_{false};
     bool has_tracked_pre_grasp_candidate_{false};
+    bool has_frozen_pre_grasp_joints_{false};
+    bool has_tof_approach_point_{false};
+    bool has_frozen_approach_axis_{false};
+    double frozen_approach_axis_x_{0.0};
+    double frozen_approach_axis_y_{0.0};
     double locked_object_yaw_{0.0};
     double hold_start_time_sec_{-1.0};
+    double phase_start_time_sec_{-1.0};
     bool hold_reached_logged_{false};
+    bool grasp_start_requested_{false};
+    bool has_tof_range_{false};
+    double latest_tof_range_m_{std::numeric_limits<double>::quiet_NaN()};
+    double last_tof_time_sec_{-1.0};
+    double tof_forward_distance_m_{0.0};
     double last_valid_vx_{0.0};
     double last_valid_vy_{-1.0};
 
@@ -1074,10 +1537,13 @@ private:
 
     rclcpp::Publisher<trajectory_msgs::msg::JointTrajectory>::SharedPtr pub_arm_traj_;
     rclcpp::Publisher<gimbal_mani::msg::ArmAutoDebug>::SharedPtr pub_auto_debug_;
+    rclcpp::Publisher<std_msgs::msg::String>::SharedPtr pub_auto_status_;
     rclcpp::Subscription<gimbal_mani::msg::TargetBearingRange>::SharedPtr sub_target_;
     rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr sub_home_;
     rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr sub_auto_enable_;
+    rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr sub_grasp_start_;
     rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr sub_joint_state_;
+    rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr sub_tof_;
     rclcpp::TimerBase::SharedPtr timer_;
     std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
     std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
