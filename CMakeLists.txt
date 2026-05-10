@@ -27,7 +27,8 @@ set(MSG_TARGET ${PROJECT_NAME}_interfaces)
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/TargetBearingRange.msg"
   "msg/GimbalManualCmd.msg"
-  DEPENDENCIES std_msgs
+  "msg/ArmAutoDebug.msg"
+  DEPENDENCIES std_msgs geometry_msgs
 )
 
 rosidl_get_typesupport_target(cpp_typesupport_target ${PROJECT_NAME} "rosidl_typesupport_cpp")

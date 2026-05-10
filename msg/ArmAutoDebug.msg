@@ -1,0 +1,33 @@
+std_msgs/Header header
+
+bool auto_enabled
+string phase
+
+bool target_valid
+bool has_joint_state
+bool has_locked_object_point
+
+string base_frame
+string end_effector_frame
+bool has_current_arm_point
+
+geometry_msgs/Point current_arm_point_base
+geometry_msgs/Point commanded_goal_point_base
+geometry_msgs/Point pre_grasp_hold_point_base
+geometry_msgs/Point object_point_base
+
+float64 cartesian_error_to_goal_m
+
+float64[] current_joint_positions
+float64[] target_joint_positions
+float64 joint_error_sum
+float64 joint_reach_tol_rad
+bool joint_goal_reached
+
+float64 hold_elapsed_sec
+float64 hold_time_sec
+
+int32 target_lock_samples
+int32 target_lock_min_samples
+float64 target_lock_max_deviation_m
+float64 target_lock_pos_tol_m
