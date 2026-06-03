@@ -7,6 +7,7 @@
 #include <limits>
 #include <sstream>
 #include <iomanip>
+#include <cstdint>
 
 #include <rclcpp/rclcpp.hpp>
 #include <geometry_msgs/msg/point.hpp>
@@ -31,56 +32,52 @@
 #include "gimbal_mani/msg/arm_auto_debug.hpp"
 #include "gimbal_mani/msg/target_bearing_range.hpp"
 
+/*
+Shoulder_Rotation:  90 deg(left) ~ -90 deg(right)
+Shoulder_Pitch:    -90 deg ~ 90 deg
+Elbow:              90 deg ~ -90 deg
+Wrist_Pitch:       -180 deg ~ 0 deg
+Wrist_Roll:          0 deg 고정 운용
+Gripper:             0 closed ~ 1.5 open
+*/
+
 class Arm_UpperLayerMain : public rclcpp::Node
 {
 public:
     Arm_UpperLayerMain() : Node("arm_upper_layer_main")
     {
-        L1_ = this->declare_parameter<double>("L1", 0.116);
-        L2_ = this->declare_parameter<double>("L2", 0.135);
-
-        saturate_reach_ = this->declare_parameter<bool>("saturate_reach", true);
-        arm_base_frame_ = this->declare_parameter<std::string>("arm_base_frame", "Base");
-        end_effector_frame_ = this->declare_parameter<std::string>("end_effector_frame", "gimbal_mount_link");
-        min_effective_range_ = this->declare_parameter<double>("min_effective_range", 0.0);
-        wrist_pitch_level_bias_ = this->declare_parameter<double>("wrist_pitch_level_bias", -1.5);
-
         pre_grasp_distance_m_ =
-            this->declare_parameter<double>("pre_grasp_distance_m", 0.02);
+            this->declare_parameter<double>("pre_grasp_distance_m", pre_grasp_distance_m_);
         pre_grasp_lift_z_m_ =
-            this->declare_parameter<double>("pre_grasp_lift_z_m", 0.03);
+            this->declare_parameter<double>("pre_grasp_lift_z_m", pre_grasp_lift_z_m_);
         pre_grasp_lateral_offset_m_ =
-            this->declare_parameter<double>("pre_grasp_lateral_offset_m", 0.023);
-
-        target_lock_min_samples_ = this->declare_parameter<int>("target_lock_min_samples", 8);
-        target_lock_pos_tol_m_ = this->declare_parameter<double>("target_lock_pos_tol_m", 0.01);
-        hold_time_sec_ = this->declare_parameter<double>("hold_time_sec", 0.4);
-        joint_reach_tol_rad_ = this->declare_parameter<double>("joint_reach_tol_rad", 0.25);
-        hold_exit_tol_rad_ = this->declare_parameter<double>("hold_exit_tol_rad", 0.35);
-        target_filter_alpha_ = this->declare_parameter<double>("target_filter_alpha", 0.05);
-        freeze_cartesian_tol_m_ = this->declare_parameter<double>("freeze_cartesian_tol_m", 0.5);
-        hold_target_exit_tol_m_ = this->declare_parameter<double>("hold_target_exit_tol_m", 0.02);
-        desired_grasp_range_m_ = this->declare_parameter<double>("desired_grasp_range_m", 0.03);
-        gripper_inside_range_m_ = this->declare_parameter<double>("gripper_inside_range_m", 0.035);
-        gripper_inner_extra_approach_m_ = this->declare_parameter<double>("gripper_inner_extra_approach_m", 0.02);
-        tof_approach_step_m_ = this->declare_parameter<double>("tof_approach_step_m", 0.01);
-        min_forward_approach_m_ = this->declare_parameter<double>("min_forward_approach_m", 0.0);
-        max_forward_approach_m_ = this->declare_parameter<double>("max_forward_approach_m", 0.2);
-        tof_timeout_sec_ = this->declare_parameter<double>("tof_timeout_sec", 0.5);
-        gripper_open_pos_ = this->declare_parameter<double>("gripper_open_pos", 0.5);
-        gripper_close_pos_ = this->declare_parameter<double>("gripper_close_pos", 0.0);
-        gripper_action_time_sec_ = this->declare_parameter<double>("gripper_action_time_sec", 0.4);
-        approach_reach_tol_rad_ = this->declare_parameter<double>("approach_reach_tol_rad", 0.25);
-        tof_ik_elbow_only_penalty_ = this->declare_parameter<double>("tof_ik_elbow_only_penalty", 8.0);
-        tof_ik_shoulder_bonus_ = this->declare_parameter<double>("tof_ik_shoulder_bonus", 1.0);
-        tof_ik_shoulder_balance_ratio_ = this->declare_parameter<double>("tof_ik_shoulder_balance_ratio", 0.8);
-
-        shoulder_rot_x_ = this->declare_parameter<double>("shoulder_rot_x", 0.0);
-        shoulder_rot_y_ = this->declare_parameter<double>("shoulder_rot_y", -0.0452);
-        shoulder_rot_z_ = this->declare_parameter<double>("shoulder_rot_z", 0.0165);
-
-        shoulder_pitch_offset_y_ = this->declare_parameter<double>("shoulder_pitch_offset_y", 0.1025);
-        shoulder_pitch_offset_z_ = this->declare_parameter<double>("shoulder_pitch_offset_z", 0.0306);
+            this->declare_parameter<double>("pre_grasp_lateral_offset_m", pre_grasp_lateral_offset_m_);
+        target_lock_bearing_tol_rad_ =
+            this->declare_parameter<double>("target_lock_bearing_tol_rad", target_lock_bearing_tol_rad_);
+        max_forward_approach_m_ =
+            this->declare_parameter<double>("max_forward_approach_m", max_forward_approach_m_);
+        gripper_open_pos_ =
+            this->declare_parameter<double>("gripper_open_pos", gripper_open_pos_);
+        gripper_close_pos_ =
+            this->declare_parameter<double>("gripper_close_pos", gripper_close_pos_);
+        gripper_action_time_sec_ =
+            this->declare_parameter<double>("gripper_action_time_sec", gripper_action_time_sec_);
+        tof_joint_probe_step_rad_ =
+            this->declare_parameter<double>("tof_joint_probe_step_rad", tof_joint_probe_step_rad_);
+        tof_joint_probe_shoulder_ratio_ =
+            this->declare_parameter<double>("tof_joint_probe_shoulder_ratio", tof_joint_probe_shoulder_ratio_);
+        tof_joint_probe_wrist_ratio_ =
+            this->declare_parameter<double>("tof_joint_probe_wrist_ratio", tof_joint_probe_wrist_ratio_);
+        tof_joint_probe_command_time_sec_ =
+            this->declare_parameter<double>("tof_joint_probe_command_time_sec", tof_joint_probe_command_time_sec_);
+        tof_joint_probe_reach_tol_rad_ =
+            this->declare_parameter<double>("tof_joint_probe_reach_tol_rad", tof_joint_probe_reach_tol_rad_);
+        tof_success_range_delta_m_ =
+            this->declare_parameter<double>("tof_success_range_delta_m", tof_success_range_delta_m_);
+        tof_fail_range_increase_m_ =
+            this->declare_parameter<double>("tof_fail_range_increase_m", tof_fail_range_increase_m_);
+        tof_max_failed_probe_count_ =
+            this->declare_parameter<int>("tof_max_failed_probe_count", tof_max_failed_probe_count_);
 
         joint_name_ = {
             "Shoulder_Rotation",
@@ -90,7 +87,7 @@ public:
             "Wrist_Roll",
             "Gripper"};
         goal_.assign(joint_name_.size(), 0.0);
-        home_goal_ = {0.0, -1.4, 1.4, -1.0, 0.0, 0.5};
+        home_goal_ = {0.0, -0.5 * M_PI, 0.5 * M_PI, -0.5 * M_PI, 0.0, 0.0};
 
         pub_arm_traj_ = this->create_publisher<trajectory_msgs::msg::JointTrajectory>(
             "/joint_trajectory_in/arm", 10);
@@ -128,7 +125,7 @@ public:
         param_cb_handle_ = this->add_on_set_parameters_callback(
             std::bind(&Arm_UpperLayerMain::on_parameters_changed, this, std::placeholders::_1));
 
-        const double publish_hz = this->declare_parameter<double>("pub_hz", 50.0);
+        const double publish_hz = 50.0;
         const auto period = std::chrono::duration<double>(1.0 / std::max(1.0, publish_hz));
         timer_ = this->create_wall_timer(
             std::chrono::duration_cast<std::chrono::milliseconds>(period),
@@ -153,12 +150,24 @@ private:
         double x{0.0};
         double y{0.0};
         double z{0.0};
+        double approach_x{1.0};
+        double approach_y{0.0};
+        double approach_z{0.0};
+        double bearing_yaw{0.0};
+        double bearing_pitch{0.0};
         double object_yaw{0.0};
     };
 
     struct TargetPoint
     {
         double x{0.0};
+        double y{0.0};
+        double z{0.0};
+    };
+
+    struct TargetVector
+    {
+        double x{1.0};
         double y{0.0};
         double z{0.0};
     };
@@ -263,6 +272,12 @@ private:
             if (hold_reached_logged_ && grasp_start_requested_)
             {
                 grasp_start_requested_ = false;
+                if (tof_approach_blocked_)
+                {
+                    RCLCPP_WARN(this->get_logger(),
+                                "Ignoring grasp_start: TOF approach is blocked after repeated unsafe motion.");
+                    break;
+                }
                 auto_phase_ = AutoPhase::GRIPPER_OPEN;
                 phase_start_time_sec_ = this->now().seconds();
             }
@@ -280,7 +295,7 @@ private:
             goal_[5] = gripper_open_pos_;
             command_time_from_start_sec_ = gripper_action_time_sec_;
             if (elapsed_in_phase() >= gripper_action_time_sec_ &&
-                plan_tof_approach_point())
+                init_tof_joint_approach())
             {
                 auto_phase_ = AutoPhase::TOF_APPROACH;
                 phase_start_time_sec_ = this->now().seconds();
@@ -290,38 +305,23 @@ private:
 
         case AutoPhase::TOF_APPROACH:
         {
-            if (!has_tof_approach_point_)
-            {
-                if (!plan_tof_approach_point())
-                {
-                    target_valid_ = false;
-                    break;
-                }
-            }
-
-            if (!solve_goal_from_point(tof_approach_point_, locked_object_yaw_))
-            {
-                target_valid_ = false;
-                break;
-            }
-
-            goal_[5] = gripper_open_pos_;
-            command_time_from_start_sec_ = 1.0;
-            if (tof_target_inside_gripper() && arm_goal_reached(approach_reach_tol_rad_))
+            if (tof_target_inside_gripper())
             {
                 auto_phase_ = AutoPhase::GRIPPER_CLOSE;
                 phase_start_time_sec_ = this->now().seconds();
+                break;
             }
-            else if (arm_goal_reached(approach_reach_tol_rad_))
+
+            if (!run_tof_joint_probe_step())
             {
-                extend_tof_approach_point();
+                stop_tof_approach_and_hold();
             }
             break;
         }
 
         case AutoPhase::GRIPPER_CLOSE:
         {
-            if (!solve_goal_from_point(tof_approach_point_, locked_object_yaw_))
+            if (!hold_last_safe_tof_joint_goal())
             {
                 target_valid_ = false;
                 break;
@@ -338,7 +338,7 @@ private:
 
         case AutoPhase::GRASP_HOLD:
         {
-            if (!solve_goal_from_point(tof_approach_point_, locked_object_yaw_))
+            if (!hold_last_safe_tof_joint_goal())
             {
                 target_valid_ = false;
                 break;
@@ -386,19 +386,15 @@ private:
 
         if (auto_phase_ == AutoPhase::TARGET_ACQUIRE)
         {
-            target_lock_buffer_.push_back({target_x, target_y, target_z, msg.object_yaw});
+            target_lock_buffer_.push_back(
+                {target_x, target_y, target_z,
+                 ray_ux, ray_uy, ray_uz,
+                 msg.yaw, msg.pitch, msg.object_yaw});
             while (static_cast<int>(target_lock_buffer_.size()) > target_lock_min_samples_)
             {
                 target_lock_buffer_.pop_front();
             }
             return;
-        }
-
-        if (auto_phase_ == AutoPhase::TRACK_PRE_GRASP ||
-            auto_phase_ == AutoPhase::PRE_GRASP_HOLD)
-        {
-            update_tracked_target({target_x, target_y, target_z, msg.object_yaw},
-                                  auto_phase_ == AutoPhase::PRE_GRASP_HOLD);
         }
     }
 
@@ -516,22 +512,16 @@ private:
                                  "Dropping target: header.frame_id is empty.");
             return false;
         }
+        target_sensor_frame_ = msg.header.frame_id;
 
-        // System convention: +pitch means looking downward.
-        // Convert to math-up convention before spherical -> Cartesian conversion.
-        const double pitch_up = -msg.pitch;
-        const double cp = std::cos(pitch_up);
         const double range_use = std::max(min_effective_range_, msg.range);
-        const double ux_sensor = cp * std::cos(msg.yaw);
-        const double uy_sensor = cp * std::sin(msg.yaw);
-        const double uz_sensor = std::sin(pitch_up);
         const geometry_msgs::msg::PointStamped p_sensor = [&]()
         {
             geometry_msgs::msg::PointStamped p;
             p.header = msg.header;
-            p.point.x = range_use * ux_sensor;
-            p.point.y = range_use * uy_sensor;
-            p.point.z = range_use * uz_sensor;
+            p.point.x = range_use;
+            p.point.y = 0.0;
+            p.point.z = 0.0;
             return p;
         }();
 
@@ -546,7 +536,7 @@ private:
             tf2::Quaternion q;
             tf2::fromMsg(tf.transform.rotation, q);
             tf2::Matrix3x3 R(q);
-            tf2::Vector3 u_base = R * tf2::Vector3(ux_sensor, uy_sensor, uz_sensor);
+            tf2::Vector3 u_base = R * tf2::Vector3(1.0, 0.0, 0.0);
             const double n = u_base.length();
             if (n <= 1e-9 || !std::isfinite(n))
             {
@@ -588,6 +578,11 @@ private:
         {
             return;
         }
+        if (!goal_within_joint_limits(goal_, true))
+        {
+            target_valid_ = false;
+            return;
+        }
 
         trajectory_msgs::msg::JointTrajectory traj;
         traj.header.stamp = this->now();
@@ -601,9 +596,118 @@ private:
         pub_arm_traj_->publish(traj);
     }
 
+    bool goal_within_joint_limits(const std::vector<double> &goal, bool warn)
+    {
+        if (goal.size() != joint_name_.size())
+        {
+            last_limit_rejection_ = "goal-size";
+            return false;
+        }
+
+        static const std::vector<double> min_limits = {
+            -0.5 * M_PI,
+            -0.5 * M_PI,
+            -0.5 * M_PI,
+            -M_PI,
+            0.0,
+            0.0};
+        static const std::vector<double> max_limits = {
+            0.5 * M_PI,
+            0.5 * M_PI,
+            0.5 * M_PI,
+            0.0,
+            0.0,
+            1.5};
+
+        constexpr double eps = 1e-6;
+        for (size_t i = 0; i < goal.size(); ++i)
+        {
+            if (goal[i] < min_limits[i] - eps || goal[i] > max_limits[i] + eps)
+            {
+                std::ostringstream ss;
+                ss << joint_name_[i] << ":"
+                   << std::fixed << std::setprecision(1) << display_joint_value(i, goal[i]);
+                last_limit_rejection_ = ss.str();
+
+                if (warn)
+                {
+                    RCLCPP_WARN_THROTTLE(
+                        this->get_logger(), *this->get_clock(), 1000,
+                        "IK rejected: %s=%.3f outside [%.3f, %.3f] rad "
+                        "(display %.1f outside [%.1f, %.1f] %s), phase=%s, "
+                        "goal=(%.3f, %.3f, %.3f), object=(%.3f, %.3f, %.3f), "
+                        "pre=(%.3f, %.3f, %.3f)",
+                        joint_name_[i].c_str(), goal[i], min_limits[i], max_limits[i],
+                        display_joint_value(i, goal[i]),
+                        display_joint_value(i, min_limits[i]),
+                        display_joint_value(i, max_limits[i]),
+                        joint_display_unit(i),
+                        phase_name(),
+                        commanded_goal_point_.x, commanded_goal_point_.y, commanded_goal_point_.z,
+                        locked_object_point_.x, locked_object_point_.y, locked_object_point_.z,
+                        pre_grasp_point_.x, pre_grasp_point_.y, pre_grasp_point_.z);
+                }
+                return false;
+            }
+        }
+
+        last_limit_rejection_.clear();
+        return true;
+    }
+
+    static double display_joint_value(size_t index, double value)
+    {
+        if (index == 5)
+        {
+            return value;
+        }
+        return value * 180.0 / M_PI;
+    }
+
+    static const char *joint_display_unit(size_t index)
+    {
+        return index == 5 ? "raw" : "deg";
+    }
+
+    template <typename Candidate>
+    void log_ik_candidates(const Candidate &up, const Candidate &dn,
+                           const std::string &selected)
+    {
+        auto finite_cost = [](double value)
+        {
+            return std::isfinite(value) ? value : -1.0;
+        };
+
+        RCLCPP_INFO_THROTTLE(
+            this->get_logger(), *this->get_clock(), 500,
+            "IK candidates phase=%s selected=%s | "
+            "up: avail=%d valid=%d sh=%.1f el=%.1f wrist=%.1f cost=%.3f | "
+            "dn: avail=%d valid=%d sh=%.1f el=%.1f wrist=%.1f cost=%.3f",
+            phase_name(), selected.c_str(),
+            up.available ? 1 : 0,
+            up.valid ? 1 : 0,
+            display_joint_value(1, up.shoulder),
+            display_joint_value(2, up.elbow),
+            display_joint_value(3, up.wrist),
+            finite_cost(up.cost),
+            dn.available ? 1 : 0,
+            dn.valid ? 1 : 0,
+            display_joint_value(1, dn.shoulder),
+            display_joint_value(2, dn.elbow),
+            display_joint_value(3, dn.wrist),
+            finite_cost(dn.cost));
+    }
+
     void reset_auto_sequence()
     {
         target_lock_buffer_.clear();
+        locked_object_point_ = {};
+        locked_approach_axis_ = {};
+        pre_grasp_point_ = {};
+        commanded_goal_point_ = {};
+        frozen_pre_grasp_point_ = {};
+        tracked_pre_grasp_candidate_ = {};
+        tof_approach_point_ = {};
         has_locked_object_point_ = false;
         has_commanded_goal_point_ = false;
         has_frozen_pre_grasp_point_ = false;
@@ -612,6 +716,25 @@ private:
         has_frozen_approach_axis_ = false;
         has_tof_approach_point_ = false;
         grasp_start_requested_ = false;
+        locked_object_yaw_ = 0.0;
+        tof_forward_distance_m_ = 0.0;
+        last_tof_approach_range_m_ = std::numeric_limits<double>::quiet_NaN();
+        last_tof_forward_progress_m_ = std::numeric_limits<double>::quiet_NaN();
+        tof_approach_faulted_ = false;
+        tof_approach_blocked_ = false;
+        tof_approach_reverse_retry_used_ = false;
+        tof_approach_axis_sign_ = 1.0;
+        last_safe_tof_joint_positions_.clear();
+        tof_pending_probe_ = false;
+        tof_active_probe_index_ = -1;
+        tof_preferred_probe_index_ = 0;
+        tof_probe_failed_mask_ = 0;
+        tof_probe_failed_count_ = 0;
+        tof_probe_start_range_m_ = std::numeric_limits<double>::quiet_NaN();
+        tof_probe_start_progress_m_ = std::numeric_limits<double>::quiet_NaN();
+        tof_probe_start_time_sec_ = -1.0;
+        last_valid_approach_axis_ = {};
+        last_limit_rejection_.clear();
         phase_start_time_sec_ = -1.0;
         hold_start_time_sec_ = -1.0;
         hold_reached_logged_ = false;
@@ -628,11 +751,17 @@ private:
 
         double yaw_c = 0.0;
         double yaw_s = 0.0;
+        double approach_x = 0.0;
+        double approach_y = 0.0;
+        double approach_z = 0.0;
         for (const auto &p : target_lock_buffer_)
         {
             m.x += p.x;
             m.y += p.y;
             m.z += p.z;
+            approach_x += p.approach_x;
+            approach_y += p.approach_y;
+            approach_z += p.approach_z;
             yaw_c += std::cos(p.object_yaw);
             yaw_s += std::sin(p.object_yaw);
         }
@@ -641,6 +770,13 @@ private:
         m.x /= n;
         m.y /= n;
         m.z /= n;
+        const auto approach = normalized_vector({approach_x / n, approach_y / n, approach_z / n},
+                                                last_valid_approach_axis_);
+        m.approach_x = approach.x;
+        m.approach_y = approach.y;
+        m.approach_z = approach.z;
+        m.bearing_yaw = mean_bearing_yaw();
+        m.bearing_pitch = mean_bearing_pitch();
         m.object_yaw = std::atan2(yaw_s, yaw_c);
         return m;
     }
@@ -659,6 +795,18 @@ private:
         return max_d;
     }
 
+    double max_locked_bearing_deviation(const TargetSample &mean) const
+    {
+        double max_d = 0.0;
+        for (const auto &p : target_lock_buffer_)
+        {
+            const double dyaw = wrap_pi(p.bearing_yaw - mean.bearing_yaw);
+            const double dpitch = p.bearing_pitch - mean.bearing_pitch;
+            max_d = std::max(max_d, std::hypot(dyaw, dpitch));
+        }
+        return max_d;
+    }
+
     bool plan_locked_points()
     {
         if (static_cast<int>(target_lock_buffer_.size()) < target_lock_min_samples_)
@@ -672,10 +820,19 @@ private:
         {
             return false;
         }
+        const double max_bearing_dev = max_locked_bearing_deviation(mean);
+        if (max_bearing_dev > target_lock_bearing_tol_rad_)
+        {
+            return false;
+        }
 
         locked_object_point_.x = mean.x;
         locked_object_point_.y = mean.y;
         locked_object_point_.z = mean.z;
+        locked_approach_axis_ = normalized_vector(
+            {mean.approach_x, mean.approach_y, mean.approach_z},
+            last_valid_approach_axis_);
+        last_valid_approach_axis_ = locked_approach_axis_;
         locked_object_yaw_ = mean.object_yaw;
         has_locked_object_point_ = true;
 
@@ -690,6 +847,10 @@ private:
             locked_object_point_.x = sample.x;
             locked_object_point_.y = sample.y;
             locked_object_point_.z = sample.z;
+            locked_approach_axis_ = normalized_vector(
+                {sample.approach_x, sample.approach_y, sample.approach_z},
+                last_valid_approach_axis_);
+            last_valid_approach_axis_ = locked_approach_axis_;
             locked_object_yaw_ = sample.object_yaw;
             has_locked_object_point_ = true;
         }
@@ -698,6 +859,11 @@ private:
             locked_object_point_.x += alpha * (sample.x - locked_object_point_.x);
             locked_object_point_.y += alpha * (sample.y - locked_object_point_.y);
             locked_object_point_.z += alpha * (sample.z - locked_object_point_.z);
+            locked_approach_axis_.x += alpha * (sample.approach_x - locked_approach_axis_.x);
+            locked_approach_axis_.y += alpha * (sample.approach_y - locked_approach_axis_.y);
+            locked_approach_axis_.z += alpha * (sample.approach_z - locked_approach_axis_.z);
+            locked_approach_axis_ = normalized_vector(locked_approach_axis_, last_valid_approach_axis_);
+            last_valid_approach_axis_ = locked_approach_axis_;
             locked_object_yaw_ += alpha * wrap_pi(sample.object_yaw - locked_object_yaw_);
             locked_object_yaw_ = wrap_pi(locked_object_yaw_);
         }
@@ -724,43 +890,28 @@ private:
     TargetPoint compute_pre_grasp_point(const TargetPoint &object_point)
     {
         TargetPoint out;
-        double vx = object_point.x;
-        double vy = object_point.y;
-        const double nxy = std::hypot(vx, vy);
-        if (nxy > 1e-6)
+        TargetVector axis;
+        if (!approach_axis(axis))
         {
-            vx /= nxy;
-            vy /= nxy;
-            last_valid_vx_ = vx;
-            last_valid_vy_ = vy;
-        }
-        else
-        {
-            const double last_n = std::hypot(last_valid_vx_, last_valid_vy_);
-            if (last_n <= 1e-6)
-            {
-                RCLCPP_WARN(this->get_logger(), "plan_locked_points: horizontal approach axis is invalid.");
-                return out;
-            }
-            vx = last_valid_vx_;
-            vy = last_valid_vy_;
+            RCLCPP_WARN(this->get_logger(), "compute_pre_grasp_point: approach axis is invalid.");
+            return out;
         }
 
-        const double left_x = -vy;
-        const double left_y = vx;
+        TargetVector sensor_to_grasp_perp{0.0, 0.0, 0.0};
 
-        out.x = object_point.x - pre_grasp_distance_m_ * vx + pre_grasp_lateral_offset_m_ * left_x;
-        out.y = object_point.y - pre_grasp_distance_m_ * vy + pre_grasp_lateral_offset_m_ * left_y;
-        out.z = object_point.z + pre_grasp_lift_z_m_;
+        out.x = object_point.x + sensor_to_grasp_perp.x - pre_grasp_distance_m_ * axis.x;
+        out.y = object_point.y + sensor_to_grasp_perp.y - pre_grasp_distance_m_ * axis.y;
+        out.z = object_point.z + sensor_to_grasp_perp.z - pre_grasp_distance_m_ * axis.z + pre_grasp_lift_z_m_;
 
         return out;
     }
 
     bool solve_goal_from_point(const TargetPoint &p, double wrist_roll_ref)
     {
-        const double x = p.x;
-        const double y = p.y;
-        const double z = p.z;
+        const TargetPoint wrist_target = grasp_to_wrist_target(p);
+        const double x = wrist_target.x;
+        const double y = wrist_target.y;
+        const double z = wrist_target.z;
 
         const double x_sr = x - shoulder_rot_x_;
         const double y_sr = y - shoulder_rot_y_;
@@ -824,10 +975,12 @@ private:
         const double prev_shoulder_pitch = q_meas_[1];
         const double prev_elbow = q_meas_[2];
 
-        const double shoulder_pitch_up = nearest_equivalent_angle(th1_up, prev_shoulder_pitch);
-        const double elbow_up = nearest_equivalent_angle(th2_up, prev_elbow);
-        const double shoulder_pitch_dn = nearest_equivalent_angle(th1_dn, prev_shoulder_pitch);
-        const double elbow_dn = nearest_equivalent_angle(th2_dn, prev_elbow);
+        const double elbow_up = nearest_equivalent_angle(ik_elbow_to_joint_elbow(th2_up), prev_elbow);
+        const double shoulder_pitch_up =
+            nearest_equivalent_angle(ik_shoulder_to_joint_shoulder(th1_up, elbow_up), prev_shoulder_pitch);
+        const double elbow_dn = nearest_equivalent_angle(ik_elbow_to_joint_elbow(th2_dn), prev_elbow);
+        const double shoulder_pitch_dn =
+            nearest_equivalent_angle(ik_shoulder_to_joint_shoulder(th1_dn, elbow_dn), prev_shoulder_pitch);
 
         auto cost = [&](double a1, double a2)
         {
@@ -850,46 +1003,116 @@ private:
                 value -= tof_ik_shoulder_bonus_ * shoulder_delta;
             }
 
+            if (use_tof_approach_ik_bias() && has_frozen_pre_grasp_point_ &&
+                has_locked_object_point_)
+            {
+                const auto candidate_point =
+                    wrist_to_grasp_point(fk_point_from_solution(psi_raw, a1, a2));
+                const double axis_x = locked_object_point_.x - frozen_pre_grasp_point_.x;
+                const double axis_y = locked_object_point_.y - frozen_pre_grasp_point_.y;
+                const double axis_z = locked_object_point_.z - frozen_pre_grasp_point_.z;
+                const double axis_n = std::sqrt(axis_x * axis_x + axis_y * axis_y + axis_z * axis_z);
+                if (axis_n > 1e-6)
+                {
+                    const double progress =
+                        ((candidate_point.x - frozen_pre_grasp_point_.x) * axis_x +
+                         (candidate_point.y - frozen_pre_grasp_point_.y) * axis_y +
+                         (candidate_point.z - frozen_pre_grasp_point_.z) * axis_z) /
+                        axis_n;
+                    const double height_error = std::fabs(candidate_point.z - p.z);
+
+                    value -= 3.0 * progress;
+                    value += 4.0 * height_error;
+                }
+            }
+
             return value;
         };
 
-        double shoulder_pitch_sel = 0.0;
-        double elbow_sel = 0.0;
-        if (ok_up && !ok_dn)
-        {
-            shoulder_pitch_sel = shoulder_pitch_up;
-            elbow_sel = elbow_up;
-        }
-        else if (!ok_up && ok_dn)
-        {
-            shoulder_pitch_sel = shoulder_pitch_dn;
-            elbow_sel = elbow_dn;
-        }
-        else
-        {
-            if (cost(shoulder_pitch_up, elbow_up) <= cost(shoulder_pitch_dn, elbow_dn))
-            {
-                shoulder_pitch_sel = shoulder_pitch_up;
-                elbow_sel = elbow_up;
-            }
-            else
-            {
-                shoulder_pitch_sel = shoulder_pitch_dn;
-                elbow_sel = elbow_dn;
-            }
-        }
-
-        goal_[0] = psi;
-        goal_[1] = shoulder_pitch_sel;
-        goal_[2] = elbow_sel;
-
-        const double wrist_pitch_raw = -(goal_[1] + goal_[2]) + wrist_pitch_level_bias_;
-        goal_[3] = nearest_equivalent_angle(wrist_pitch_raw, q_meas_[3]);
-        goal_[4] = nearest_equivalent_angle(wrist_roll_ref, q_meas_[4]);
-
-        target_valid_ = true;
         commanded_goal_point_ = p;
         has_commanded_goal_point_ = true;
+
+        std::vector<double> best_goal;
+        double best_cost = std::numeric_limits<double>::infinity();
+        bool has_valid_candidate = false;
+        std::string selected_candidate{"none"};
+
+        struct IkCandidateDebug
+        {
+            bool available{false};
+            bool valid{false};
+            double shoulder{0.0};
+            double elbow{0.0};
+            double wrist{0.0};
+            double cost{std::numeric_limits<double>::quiet_NaN()};
+        };
+
+        IkCandidateDebug up_debug;
+        IkCandidateDebug dn_debug;
+
+        auto try_candidate = [&](const char *name, bool ok, double shoulder_pitch, double elbow,
+                                 IkCandidateDebug &debug)
+        {
+            if (!ok)
+            {
+                return;
+            }
+
+            debug.available = true;
+
+            auto candidate = goal_;
+            candidate[0] = psi;
+            candidate[1] = shoulder_pitch;
+            candidate[2] = elbow;
+            const double wrist_pitch_raw =
+                -(candidate[1] + candidate[2]) + wrist_pitch_level_bias_;
+            candidate[3] = nearest_equivalent_angle(wrist_pitch_raw, q_meas_[3]);
+            (void)wrist_roll_ref;
+            candidate[4] = 0.0;
+
+            debug.shoulder = candidate[1];
+            debug.elbow = candidate[2];
+            debug.wrist = candidate[3];
+
+            if (!goal_within_joint_limits(candidate, false))
+            {
+                return;
+            }
+
+            const double c = cost(shoulder_pitch, elbow);
+            debug.valid = true;
+            debug.cost = c;
+            if (!has_valid_candidate || c < best_cost)
+            {
+                best_goal = candidate;
+                best_cost = c;
+                has_valid_candidate = true;
+                selected_candidate = name;
+            }
+        };
+
+        try_candidate("up", ok_up, shoulder_pitch_up, elbow_up, up_debug);
+        try_candidate("dn", ok_dn, shoulder_pitch_dn, elbow_dn, dn_debug);
+
+        log_ik_candidates(up_debug, dn_debug, selected_candidate);
+
+        if (!has_valid_candidate)
+        {
+            auto rejected = goal_;
+            rejected[0] = psi;
+            rejected[1] = ok_up ? shoulder_pitch_up : shoulder_pitch_dn;
+            rejected[2] = ok_up ? elbow_up : elbow_dn;
+            rejected[3] = nearest_equivalent_angle(
+                -(rejected[1] + rejected[2]) + wrist_pitch_level_bias_, q_meas_[3]);
+            rejected[4] = 0.0;
+            goal_within_joint_limits(rejected, true);
+            target_valid_ = false;
+            return false;
+        }
+
+        goal_ = best_goal;
+        goal_within_joint_limits(goal_, false);
+        target_valid_ = true;
         return true;
     }
 
@@ -940,6 +1163,181 @@ private:
                auto_phase_ == AutoPhase::GRASP_HOLD;
     }
 
+    static double ik_elbow_to_joint_elbow(double ik_elbow)
+    {
+        return wrap_pi(0.5 * M_PI - ik_elbow);
+    }
+
+    static double joint_elbow_to_ik_elbow(double joint_elbow)
+    {
+        return wrap_pi(0.5 * M_PI - joint_elbow);
+    }
+
+    static double ik_shoulder_to_joint_shoulder(double ik_shoulder, double joint_elbow)
+    {
+        return wrap_pi(ik_shoulder - joint_elbow);
+    }
+
+    static double joint_shoulder_to_ik_shoulder(double joint_shoulder, double joint_elbow)
+    {
+        return wrap_pi(joint_shoulder + joint_elbow);
+    }
+
+    static TargetVector normalized_vector(const TargetVector &v, const TargetVector &fallback)
+    {
+        const double n = std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+        if (n <= 1e-9 || !std::isfinite(n))
+        {
+            return fallback;
+        }
+
+        return {v.x / n, v.y / n, v.z / n};
+    }
+
+    static TargetVector cross_vector(const TargetVector &a, const TargetVector &b)
+    {
+        return {
+            a.y * b.z - a.z * b.y,
+            a.z * b.x - a.x * b.z,
+            a.x * b.y - a.y * b.x};
+    }
+
+    double mean_bearing_yaw() const
+    {
+        double c = 0.0;
+        double s = 0.0;
+        for (const auto &p : target_lock_buffer_)
+        {
+            c += std::cos(p.bearing_yaw);
+            s += std::sin(p.bearing_yaw);
+        }
+        return std::atan2(s, c);
+    }
+
+    double mean_bearing_pitch() const
+    {
+        if (target_lock_buffer_.empty())
+        {
+            return 0.0;
+        }
+
+        double sum = 0.0;
+        for (const auto &p : target_lock_buffer_)
+        {
+            sum += p.bearing_pitch;
+        }
+        return sum / static_cast<double>(target_lock_buffer_.size());
+    }
+
+    TargetPoint fk_point_from_solution(double psi_raw, double shoulder_joint, double elbow_joint) const
+    {
+        const double shoulder_pitch = joint_shoulder_to_ik_shoulder(shoulder_joint, elbow_joint);
+        const double elbow_ik = joint_elbow_to_ik_elbow(elbow_joint);
+        const double z_plane =
+            shoulder_pitch_offset_y_ +
+            L1_ * std::cos(shoulder_pitch) +
+            L2_ * std::cos(shoulder_pitch + elbow_ik);
+        const double y_plane =
+            shoulder_pitch_offset_z_ +
+            L1_ * std::sin(shoulder_pitch) +
+            L2_ * std::sin(shoulder_pitch + elbow_ik);
+
+        const double c = std::cos(psi_raw);
+        const double s = std::sin(psi_raw);
+
+        TargetPoint out;
+        out.x = shoulder_rot_x_ + s * z_plane;
+        out.y = shoulder_rot_y_ - c * z_plane;
+        out.z = shoulder_rot_z_ + y_plane;
+        return out;
+    }
+
+    bool approach_axis(TargetVector &axis) const
+    {
+        if (has_frozen_approach_axis_)
+        {
+            axis = frozen_approach_axis_;
+        }
+        else if (has_locked_object_point_)
+        {
+            axis = locked_approach_axis_;
+        }
+        else
+        {
+            axis = last_valid_approach_axis_;
+        }
+
+        const double n = std::sqrt(axis.x * axis.x + axis.y * axis.y + axis.z * axis.z);
+        if (n <= 1e-6 || !std::isfinite(n))
+        {
+            return false;
+        }
+
+        axis.x /= n;
+        axis.y /= n;
+        axis.z /= n;
+        return true;
+    }
+
+    bool wrist_to_grasp_offset_base(TargetVector &offset) const
+    {
+        TargetVector forward;
+        if (!approach_axis(forward))
+        {
+            return false;
+        }
+
+        const TargetVector world_up{0.0, 0.0, 1.0};
+        TargetVector side = normalized_vector(cross_vector(world_up, forward), {1.0, 0.0, 0.0});
+        if (std::fabs(side.x) < 1e-6 && std::fabs(side.y) < 1e-6 && std::fabs(side.z) < 1e-6)
+        {
+            side = {1.0, 0.0, 0.0};
+        }
+
+        TargetVector up = normalized_vector(cross_vector(forward, side), world_up);
+
+        offset.x = wrist_to_grasp_local_x_m_ * side.x +
+                   wrist_to_grasp_forward_offset_m_ * forward.x +
+                   wrist_to_grasp_local_z_m_ * up.x;
+        offset.y = wrist_to_grasp_local_x_m_ * side.y +
+                   wrist_to_grasp_forward_offset_m_ * forward.y +
+                   wrist_to_grasp_local_z_m_ * up.y;
+        offset.z = wrist_to_grasp_local_x_m_ * side.z +
+                   wrist_to_grasp_forward_offset_m_ * forward.z +
+                   wrist_to_grasp_local_z_m_ * up.z;
+        return true;
+    }
+
+    TargetPoint grasp_to_wrist_target(const TargetPoint &grasp_point) const
+    {
+        TargetVector offset;
+        if (!wrist_to_grasp_offset_base(offset))
+        {
+            return grasp_point;
+        }
+
+        TargetPoint out = grasp_point;
+        out.x -= offset.x;
+        out.y -= offset.y;
+        out.z -= offset.z;
+        return out;
+    }
+
+    TargetPoint wrist_to_grasp_point(const TargetPoint &wrist_point) const
+    {
+        TargetVector offset;
+        if (!wrist_to_grasp_offset_base(offset))
+        {
+            return wrist_point;
+        }
+
+        TargetPoint out = wrist_point;
+        out.x += offset.x;
+        out.y += offset.y;
+        out.z += offset.z;
+        return out;
+    }
+
     void freeze_pre_grasp_point()
     {
         frozen_pre_grasp_point_ = pre_grasp_point_;
@@ -949,11 +1347,10 @@ private:
         frozen_pre_grasp_joint_positions_ = q_meas_;
         has_frozen_pre_grasp_joints_ = frozen_pre_grasp_joint_positions_.size() > 2;
 
-        const double n = std::hypot(last_valid_vx_, last_valid_vy_);
-        if (n > 1e-6)
+        TargetVector axis;
+        if (approach_axis(axis))
         {
-            frozen_approach_axis_x_ = last_valid_vx_ / n;
-            frozen_approach_axis_y_ = last_valid_vy_ / n;
+            frozen_approach_axis_ = axis;
             has_frozen_approach_axis_ = true;
         }
     }
@@ -985,6 +1382,237 @@ private:
                age <= tof_timeout_sec_;
     }
 
+    bool init_tof_joint_approach()
+    {
+        if (!has_frozen_pre_grasp_joints_ ||
+            frozen_pre_grasp_joint_positions_.size() != joint_name_.size() ||
+            !tof_range_valid())
+        {
+            return false;
+        }
+
+        last_safe_tof_joint_positions_ = goal_;
+        if (last_safe_tof_joint_positions_.size() != joint_name_.size())
+        {
+            last_safe_tof_joint_positions_ = frozen_pre_grasp_joint_positions_;
+        }
+        if (last_safe_tof_joint_positions_.size() != joint_name_.size())
+        {
+            return false;
+        }
+        last_safe_tof_joint_positions_[4] = 0.0;
+        last_safe_tof_joint_positions_[5] = gripper_open_pos_;
+        if (!goal_within_joint_limits(last_safe_tof_joint_positions_, false))
+        {
+            return false;
+        }
+        tof_pending_probe_ = false;
+        tof_probe_failed_mask_ = 0;
+        tof_probe_failed_count_ = 0;
+        tof_preferred_probe_index_ = 0;
+        tof_approach_faulted_ = false;
+        tof_approach_blocked_ = false;
+        tof_forward_distance_m_ = 0.0;
+        last_tof_approach_range_m_ = latest_tof_range_m_;
+        last_tof_forward_progress_m_ = current_forward_progress();
+        return true;
+    }
+
+    struct TofProbeCandidate
+    {
+        double shoulder_scale{0.0};
+        double elbow_scale{0.0};
+        double wrist_scale{0.0};
+    };
+
+    std::vector<TofProbeCandidate> tof_probe_candidates() const
+    {
+        const double sh = tof_joint_probe_shoulder_ratio_;
+        const double wr = tof_joint_probe_wrist_ratio_;
+        return {
+            {0.0, 1.0, -wr},
+            {0.0, 1.0, -0.5 * wr},
+            {sh, 1.0, -wr},
+            {-sh, 1.0, -wr},
+            {0.0, 0.5, -wr},
+            {0.0, 0.0, -wr}};
+    }
+
+    bool issue_tof_joint_probe()
+    {
+        if (last_safe_tof_joint_positions_.size() != joint_name_.size() ||
+            !tof_range_valid())
+        {
+            tof_approach_blocked_ = true;
+            return false;
+        }
+
+        const auto probes = tof_probe_candidates();
+        const size_t n = probes.size();
+        if (n == 0)
+        {
+            tof_approach_blocked_ = true;
+            return false;
+        }
+
+        const double step = std::max(0.0, tof_joint_probe_step_rad_);
+        for (size_t k = 0; k < n; ++k)
+        {
+            const size_t idx = (static_cast<size_t>(tof_preferred_probe_index_) + k) % n;
+            if ((tof_probe_failed_mask_ & (1u << idx)) != 0)
+            {
+                continue;
+            }
+
+            auto candidate = last_safe_tof_joint_positions_;
+            candidate[1] += probes[idx].shoulder_scale * step;
+            candidate[2] += probes[idx].elbow_scale * step;
+            candidate[3] += probes[idx].wrist_scale * step;
+            candidate[4] = 0.0;
+            candidate[5] = gripper_open_pos_;
+
+            if (!goal_within_joint_limits(candidate, false))
+            {
+                tof_probe_failed_mask_ |= (1u << idx);
+                ++tof_probe_failed_count_;
+                continue;
+            }
+
+            goal_ = candidate;
+            target_valid_ = true;
+            command_time_from_start_sec_ = tof_joint_probe_command_time_sec_;
+            tof_pending_probe_ = true;
+            tof_active_probe_index_ = static_cast<int>(idx);
+            tof_probe_start_time_sec_ = this->now().seconds();
+            tof_probe_start_range_m_ = latest_tof_range_m_;
+            tof_probe_start_progress_m_ = current_forward_progress();
+            RCLCPP_INFO(
+                this->get_logger(),
+                "TOF joint probe idx=%zu sh=%.1f el=%.1f wrist=%.1f start_range=%.4f",
+                idx,
+                display_joint_value(1, goal_[1]),
+                display_joint_value(2, goal_[2]),
+                display_joint_value(3, goal_[3]),
+                tof_probe_start_range_m_);
+            return true;
+        }
+
+        tof_approach_blocked_ = true;
+        return false;
+    }
+
+    bool evaluate_tof_joint_probe()
+    {
+        goal_[5] = gripper_open_pos_;
+        const double elapsed = this->now().seconds() - tof_probe_start_time_sec_;
+        if (elapsed < tof_joint_probe_command_time_sec_)
+        {
+            return true;
+        }
+
+        if (!arm_goal_reached(tof_joint_probe_reach_tol_rad_))
+        {
+            return true;
+        }
+
+        if (!tof_range_valid())
+        {
+            return true;
+        }
+
+        const double range_delta = tof_probe_start_range_m_ - latest_tof_range_m_;
+        const double progress = current_forward_progress();
+        const double progress_delta =
+            std::isfinite(progress) && std::isfinite(tof_probe_start_progress_m_)
+                ? progress - tof_probe_start_progress_m_
+                : std::numeric_limits<double>::quiet_NaN();
+        const bool range_increased = range_delta <= -tof_fail_range_increase_m_;
+
+        if (tof_target_inside_gripper() || range_delta >= tof_success_range_delta_m_)
+        {
+            last_safe_tof_joint_positions_ = goal_;
+            tof_pending_probe_ = false;
+            tof_preferred_probe_index_ = std::max(0, tof_active_probe_index_);
+            tof_probe_failed_mask_ = 0;
+            tof_probe_failed_count_ = 0;
+            tof_forward_distance_m_ = clamp(
+                tof_forward_distance_m_ + std::max(0.0, tof_approach_step_m_),
+                min_forward_approach_m_,
+                max_forward_approach_m_);
+            last_tof_approach_range_m_ = latest_tof_range_m_;
+            last_tof_forward_progress_m_ = progress;
+            RCLCPP_INFO(
+                this->get_logger(),
+                "TOF joint probe accepted idx=%d range_delta=%.4f progress_delta=%.4f",
+                tof_active_probe_index_, range_delta, progress_delta);
+            return true;
+        }
+
+        {
+            if (tof_active_probe_index_ >= 0)
+            {
+                tof_probe_failed_mask_ |= (1u << static_cast<size_t>(tof_active_probe_index_));
+            }
+            ++tof_probe_failed_count_;
+            goal_ = last_safe_tof_joint_positions_;
+            goal_[4] = 0.0;
+            goal_[5] = gripper_open_pos_;
+            tof_pending_probe_ = false;
+            RCLCPP_WARN(
+                this->get_logger(),
+                "TOF joint probe rejected idx=%d range_delta=%.4f progress_delta=%.4f increased=%d failed=%d",
+                tof_active_probe_index_, range_delta, progress_delta,
+                range_increased ? 1 : 0, tof_probe_failed_count_);
+        }
+
+        if (tof_probe_failed_count_ >= tof_max_failed_probe_count_)
+        {
+            tof_approach_blocked_ = true;
+            return false;
+        }
+
+        return true;
+    }
+
+    bool run_tof_joint_probe_step()
+    {
+        if (tof_approach_blocked_)
+        {
+            return false;
+        }
+
+        if (tof_pending_probe_)
+        {
+            return evaluate_tof_joint_probe();
+        }
+
+        if (last_safe_tof_joint_positions_.size() == joint_name_.size() &&
+            !arm_goal_reached(tof_joint_probe_reach_tol_rad_))
+        {
+            goal_ = last_safe_tof_joint_positions_;
+            goal_[4] = 0.0;
+            goal_[5] = gripper_open_pos_;
+            target_valid_ = goal_within_joint_limits(goal_, false);
+            return target_valid_;
+        }
+
+        return issue_tof_joint_probe();
+    }
+
+    bool hold_last_safe_tof_joint_goal()
+    {
+        if (last_safe_tof_joint_positions_.size() != joint_name_.size())
+        {
+            return false;
+        }
+
+        goal_ = last_safe_tof_joint_positions_;
+        goal_[4] = 0.0;
+        goal_[5] = gripper_close_pos_;
+        target_valid_ = goal_within_joint_limits(goal_, false);
+        return target_valid_;
+    }
+
     bool plan_tof_approach_point()
     {
         if (!has_frozen_pre_grasp_point_ ||
@@ -994,13 +1622,12 @@ private:
             return false;
         }
 
-        tof_forward_distance_m_ = clamp(
-            latest_tof_range_m_ - desired_grasp_range_m_ + gripper_inner_extra_approach_m_,
-            min_forward_approach_m_,
-            max_forward_approach_m_);
-
+        tof_forward_distance_m_ = min_forward_approach_m_;
         update_tof_approach_point_from_forward_distance();
         has_tof_approach_point_ = true;
+        tof_approach_faulted_ = false;
+        last_tof_approach_range_m_ = latest_tof_range_m_;
+        last_tof_forward_progress_m_ = current_forward_progress();
         return true;
     }
 
@@ -1025,22 +1652,173 @@ private:
         tof_forward_distance_m_ = next_forward;
         update_tof_approach_point_from_forward_distance();
         has_tof_approach_point_ = true;
+        last_tof_approach_range_m_ = latest_tof_range_m_;
+        last_tof_forward_progress_m_ = current_forward_progress();
         return true;
+    }
+
+    double current_forward_progress() const
+    {
+        if (!has_frozen_pre_grasp_point_ || !has_frozen_approach_axis_)
+        {
+            return std::numeric_limits<double>::quiet_NaN();
+        }
+
+        geometry_msgs::msg::Point current;
+        if (!lookup_current_arm_point(current))
+        {
+            return std::numeric_limits<double>::quiet_NaN();
+        }
+
+        TargetVector axis = signed_tof_approach_axis();
+        return (current.x - frozen_pre_grasp_point_.x) * axis.x +
+               (current.y - frozen_pre_grasp_point_.y) * axis.y +
+               (current.z - frozen_pre_grasp_point_.z) * axis.z;
+    }
+
+    bool tof_approach_progress_ok()
+    {
+        if (tof_approach_faulted_)
+        {
+            return false;
+        }
+
+        const double progress = current_forward_progress();
+        if (std::isfinite(progress))
+        {
+            if (progress < -tof_progress_reverse_tol_m_)
+            {
+                RCLCPP_WARN(this->get_logger(),
+                            "TOF approach stopped: gripper moved backward, progress=%.4f m",
+                            progress);
+                tof_approach_faulted_ = true;
+                tof_approach_blocked_ = true;
+                return false;
+            }
+
+            if (std::isfinite(last_tof_forward_progress_m_) &&
+                progress + tof_progress_reverse_tol_m_ < last_tof_forward_progress_m_)
+            {
+                RCLCPP_WARN(this->get_logger(),
+                            "TOF approach stopped: gripper progress decreased %.4f -> %.4f m",
+                            last_tof_forward_progress_m_, progress);
+                tof_approach_faulted_ = true;
+                tof_approach_blocked_ = true;
+                return false;
+            }
+        }
+
+        if (tof_range_valid() && std::isfinite(last_tof_approach_range_m_) &&
+            latest_tof_range_m_ > last_tof_approach_range_m_ + tof_range_increase_tol_m_)
+        {
+            if (!tof_approach_reverse_retry_used_)
+            {
+                tof_approach_axis_sign_ *= -1.0;
+                tof_approach_reverse_retry_used_ = true;
+                RCLCPP_WARN(this->get_logger(),
+                            "TOF approach stopped: range increased %.4f -> %.4f m, reversing approach sign to %.0f",
+                            last_tof_approach_range_m_, latest_tof_range_m_, tof_approach_axis_sign_);
+            }
+            else
+            {
+                tof_approach_blocked_ = true;
+                RCLCPP_WARN(this->get_logger(),
+                            "TOF approach blocked: range increased again %.4f -> %.4f m",
+                            last_tof_approach_range_m_, latest_tof_range_m_);
+            }
+            tof_approach_faulted_ = true;
+            return false;
+        }
+
+        geometry_msgs::msg::Point current;
+        if (arm_goal_reached(approach_reach_tol_rad_) &&
+            lookup_current_arm_point(current))
+        {
+            const double cart_err = cartesian_error_to_goal(current);
+            if (std::isfinite(cart_err) &&
+                cart_err > tof_cartesian_error_stop_m_)
+            {
+                RCLCPP_WARN(this->get_logger(),
+                            "TOF approach stopped: joint goal reached but cartesian error is %.4f m",
+                            cart_err);
+                tof_approach_faulted_ = true;
+                tof_approach_blocked_ = true;
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    void stop_tof_approach_and_hold()
+    {
+        tof_forward_distance_m_ = 0.0;
+        tof_approach_point_ = frozen_pre_grasp_point_;
+        has_tof_approach_point_ = false;
+        grasp_start_requested_ = false;
+        auto_phase_ = AutoPhase::PRE_GRASP_HOLD;
+        phase_start_time_sec_ = -1.0;
+        hold_start_time_sec_ = this->now().seconds();
+        hold_reached_logged_ = true;
+    }
+
+    TargetVector signed_tof_approach_axis() const
+    {
+        return {
+            tof_approach_axis_sign_ * frozen_approach_axis_.x,
+            tof_approach_axis_sign_ * frozen_approach_axis_.y,
+            tof_approach_axis_sign_ * frozen_approach_axis_.z};
     }
 
     void update_tof_approach_point_from_forward_distance()
     {
+        TargetVector axis = signed_tof_approach_axis();
         tof_approach_point_.x =
-            frozen_pre_grasp_point_.x + tof_forward_distance_m_ * frozen_approach_axis_x_;
+            frozen_pre_grasp_point_.x + tof_forward_distance_m_ * axis.x;
         tof_approach_point_.y =
-            frozen_pre_grasp_point_.y + tof_forward_distance_m_ * frozen_approach_axis_y_;
-        tof_approach_point_.z = frozen_pre_grasp_point_.z;
+            frozen_pre_grasp_point_.y + tof_forward_distance_m_ * axis.y;
+        tof_approach_point_.z =
+            frozen_pre_grasp_point_.z + tof_forward_distance_m_ * axis.z;
     }
 
     bool tof_target_inside_gripper() const
     {
         return tof_range_valid() &&
                latest_tof_range_m_ <= gripper_inside_range_m_;
+    }
+
+    bool lookup_sensor_to_grasp_perpendicular_offset(const TargetVector &axis,
+                                                     TargetVector &perp_out) const
+    {
+        if (!tf_buffer_)
+        {
+            return false;
+        }
+
+        try
+        {
+            const auto tf_sensor = tf_buffer_->lookupTransform(
+                arm_base_frame_, target_sensor_frame_, tf2::TimePointZero);
+            const auto tf_grasp = tf_buffer_->lookupTransform(
+                arm_base_frame_, end_effector_frame_, tf2::TimePointZero);
+
+            const double ox =
+                tf_grasp.transform.translation.x - tf_sensor.transform.translation.x;
+            const double oy =
+                tf_grasp.transform.translation.y - tf_sensor.transform.translation.y;
+            const double oz =
+                tf_grasp.transform.translation.z - tf_sensor.transform.translation.z;
+            const double parallel = ox * axis.x + oy * axis.y + oz * axis.z;
+
+            perp_out.x = ox - parallel * axis.x;
+            perp_out.y = oy - parallel * axis.y;
+            perp_out.z = oz - parallel * axis.z;
+            return true;
+        }
+        catch (const tf2::TransformException &)
+        {
+            return false;
+        }
     }
 
     static double nearest_equivalent_angle(double target, double reference)
@@ -1124,6 +1902,16 @@ private:
         }
 
         return max_locked_target_deviation(mean_locked_target());
+    }
+
+    double current_target_lock_max_bearing_deviation() const
+    {
+        if (target_lock_buffer_.empty())
+        {
+            return std::numeric_limits<double>::quiet_NaN();
+        }
+
+        return max_locked_bearing_deviation(mean_locked_target());
     }
 
     double current_hold_elapsed_sec() const
@@ -1257,37 +2045,20 @@ private:
 
     void publish_auto_status()
     {
-        geometry_msgs::msg::Point current_arm_point;
-        const bool has_current = lookup_current_arm_point(current_arm_point);
-        const double cart_err = has_current
-                                    ? cartesian_error_to_goal(current_arm_point)
-                                    : std::numeric_limits<double>::quiet_NaN();
-        const double hold_drift = current_hold_target_drift();
-
         std::ostringstream ss;
         ss << std::fixed << std::setprecision(3)
            << "phase=" << phase_name()
-           << " auto=" << (auto_enabled_ ? 1 : 0)
-           << " frozen=" << (has_frozen_pre_grasp_point_ ? 1 : 0)
-           << " grasp_req=" << (grasp_start_requested_ ? 1 : 0)
-           << " tof_ok=" << (tof_range_valid() ? 1 : 0)
-           << " inside=" << (tof_target_inside_gripper() ? 1 : 0)
            << " tof=" << latest_tof_range_m_
+           << " in=" << (tof_target_inside_gripper() ? 1 : 0)
            << " fwd=" << tof_forward_distance_m_
-           << " d_sh=" << shoulder_pitch_delta_from_hold()
-           << " d_el=" << elbow_delta_from_hold()
-           << " sh_el=" << shoulder_to_elbow_delta_ratio()
-           << " joint_err=" << arm_goal_error_sum()
-           << " cart_err=" << cart_err
-           << " drift=" << hold_drift;
-
-        if (has_commanded_goal_point_)
-        {
-            ss << " goal=("
-               << commanded_goal_point_.x << ","
-               << commanded_goal_point_.y << ","
-               << commanded_goal_point_.z << ")";
-        }
+           << " probe=" << tof_active_probe_index_
+           << " fails=" << tof_probe_failed_count_
+           << " block=" << (tof_approach_blocked_ ? 1 : 0)
+           << " bear=" << current_target_lock_max_bearing_deviation()
+           << " limit=" << (last_limit_rejection_.empty() ? "ok" : last_limit_rejection_)
+           << " sh=" << shoulder_pitch_delta_from_hold()
+           << " el=" << elbow_delta_from_hold()
+           << " r=" << shoulder_to_elbow_delta_ratio();
 
         std_msgs::msg::String msg;
         msg.data = ss.str();
@@ -1303,35 +2074,7 @@ private:
         for (const auto &p : params)
         {
             const auto &name = p.get_name();
-            if (name == "L1")
-            {
-                L1_ = p.as_double();
-            }
-            else if (name == "L2")
-            {
-                L2_ = p.as_double();
-            }
-            else if (name == "saturate_reach")
-            {
-                saturate_reach_ = p.as_bool();
-            }
-            else if (name == "arm_base_frame")
-            {
-                arm_base_frame_ = p.as_string();
-            }
-            else if (name == "end_effector_frame")
-            {
-                end_effector_frame_ = p.as_string();
-            }
-            else if (name == "min_effective_range")
-            {
-                min_effective_range_ = p.as_double();
-            }
-            else if (name == "wrist_pitch_level_bias")
-            {
-                wrist_pitch_level_bias_ = p.as_double();
-            }
-            else if (name == "pre_grasp_distance_m")
+            if (name == "pre_grasp_distance_m")
             {
                 pre_grasp_distance_m_ = p.as_double();
             }
@@ -1343,65 +2086,13 @@ private:
             {
                 pre_grasp_lateral_offset_m_ = p.as_double();
             }
-            else if (name == "target_lock_min_samples")
+            else if (name == "target_lock_bearing_tol_rad")
             {
-                target_lock_min_samples_ = p.as_int();
-            }
-            else if (name == "target_lock_pos_tol_m")
-            {
-                target_lock_pos_tol_m_ = p.as_double();
-            }
-            else if (name == "hold_time_sec")
-            {
-                hold_time_sec_ = p.as_double();
-            }
-            else if (name == "joint_reach_tol_rad")
-            {
-                joint_reach_tol_rad_ = p.as_double();
-            }
-            else if (name == "hold_exit_tol_rad")
-            {
-                hold_exit_tol_rad_ = p.as_double();
-            }
-            else if (name == "target_filter_alpha")
-            {
-                target_filter_alpha_ = p.as_double();
-            }
-            else if (name == "freeze_cartesian_tol_m")
-            {
-                freeze_cartesian_tol_m_ = p.as_double();
-            }
-            else if (name == "hold_target_exit_tol_m")
-            {
-                hold_target_exit_tol_m_ = p.as_double();
-            }
-            else if (name == "desired_grasp_range_m")
-            {
-                desired_grasp_range_m_ = p.as_double();
-            }
-            else if (name == "gripper_inside_range_m")
-            {
-                gripper_inside_range_m_ = p.as_double();
-            }
-            else if (name == "gripper_inner_extra_approach_m")
-            {
-                gripper_inner_extra_approach_m_ = p.as_double();
-            }
-            else if (name == "tof_approach_step_m")
-            {
-                tof_approach_step_m_ = p.as_double();
-            }
-            else if (name == "min_forward_approach_m")
-            {
-                min_forward_approach_m_ = p.as_double();
+                target_lock_bearing_tol_rad_ = p.as_double();
             }
             else if (name == "max_forward_approach_m")
             {
                 max_forward_approach_m_ = p.as_double();
-            }
-            else if (name == "tof_timeout_sec")
-            {
-                tof_timeout_sec_ = p.as_double();
             }
             else if (name == "gripper_open_pos")
             {
@@ -1415,25 +2106,37 @@ private:
             {
                 gripper_action_time_sec_ = p.as_double();
             }
-            else if (name == "approach_reach_tol_rad")
+            else if (name == "tof_joint_probe_step_rad")
             {
-                approach_reach_tol_rad_ = p.as_double();
+                tof_joint_probe_step_rad_ = p.as_double();
             }
-            else if (name == "tof_ik_elbow_only_penalty")
+            else if (name == "tof_joint_probe_shoulder_ratio")
             {
-                tof_ik_elbow_only_penalty_ = p.as_double();
+                tof_joint_probe_shoulder_ratio_ = p.as_double();
             }
-            else if (name == "tof_ik_shoulder_bonus")
+            else if (name == "tof_joint_probe_wrist_ratio")
             {
-                tof_ik_shoulder_bonus_ = p.as_double();
+                tof_joint_probe_wrist_ratio_ = p.as_double();
             }
-            else if (name == "tof_ik_shoulder_balance_ratio")
+            else if (name == "tof_joint_probe_command_time_sec")
             {
-                tof_ik_shoulder_balance_ratio_ = p.as_double();
+                tof_joint_probe_command_time_sec_ = p.as_double();
             }
-            else if (name == "pub_hz")
+            else if (name == "tof_joint_probe_reach_tol_rad")
             {
-                // runtime change not applied to existing timer period in this implementation
+                tof_joint_probe_reach_tol_rad_ = p.as_double();
+            }
+            else if (name == "tof_success_range_delta_m")
+            {
+                tof_success_range_delta_m_ = p.as_double();
+            }
+            else if (name == "tof_fail_range_increase_m")
+            {
+                tof_fail_range_increase_m_ = p.as_double();
+            }
+            else if (name == "tof_max_failed_probe_count")
+            {
+                tof_max_failed_probe_count_ = p.as_int();
             }
         }
 
@@ -1460,7 +2163,8 @@ private:
     bool auto_enabled_{false};
     double command_time_from_start_sec_{0.1};
     std::string arm_base_frame_{"Base"};
-    std::string end_effector_frame_{"gimbal_mount_link"};
+    std::string end_effector_frame_{"gripper_grasp_frame"};
+    std::string target_sensor_frame_{"tof_link"};
     double min_effective_range_{0.0};
 
     double shoulder_rot_x_{0.0};
@@ -1472,36 +2176,52 @@ private:
 
     double wrist_pitch_level_bias_{-1.5};
 
-    double pre_grasp_distance_m_{0.08};
-    double pre_grasp_lift_z_m_{0.01};
-    double pre_grasp_lateral_offset_m_{0.0};
+    double pre_grasp_distance_m_{0.05};
+    double pre_grasp_lift_z_m_{0.0};
+    double pre_grasp_lateral_offset_m_{0.023};
 
     int target_lock_min_samples_{8};
     double target_lock_pos_tol_m_{0.01};
     double hold_time_sec_{0.4};
     double joint_reach_tol_rad_{0.25};
     double hold_exit_tol_rad_{0.35};
-    double target_filter_alpha_{0.25};
-    double freeze_cartesian_tol_m_{0.5};
+    double target_filter_alpha_{0.05};
+    double freeze_cartesian_tol_m_{0.03};
     double hold_target_exit_tol_m_{0.02};
+    double target_lock_bearing_tol_rad_{0.03};
     double desired_grasp_range_m_{0.03};
     double gripper_inside_range_m_{0.035};
     double gripper_inner_extra_approach_m_{0.02};
     double tof_approach_step_m_{0.01};
     double min_forward_approach_m_{0.0};
-    double max_forward_approach_m_{0.10};
+    double max_forward_approach_m_{0.085};
     double tof_timeout_sec_{0.5};
-    double gripper_open_pos_{0.5};
+    double gripper_open_pos_{0.8};
     double gripper_close_pos_{0.0};
-    double gripper_action_time_sec_{0.4};
+    double gripper_action_time_sec_{0.8};
     double approach_reach_tol_rad_{0.25};
+    double tof_range_increase_tol_m_{0.005};
+    double tof_progress_reverse_tol_m_{0.005};
+    double tof_cartesian_error_stop_m_{0.06};
+    double tof_joint_probe_step_rad_{0.035};
+    double tof_joint_probe_shoulder_ratio_{0.3};
+    double tof_joint_probe_wrist_ratio_{1.0};
+    double tof_joint_probe_command_time_sec_{0.25};
+    double tof_joint_probe_reach_tol_rad_{0.02};
+    double tof_success_range_delta_m_{0.002};
+    double tof_fail_range_increase_m_{0.002};
+    int tof_max_failed_probe_count_{6};
     double tof_ik_elbow_only_penalty_{8.0};
     double tof_ik_shoulder_bonus_{1.0};
     double tof_ik_shoulder_balance_ratio_{0.8};
+    double wrist_to_grasp_local_x_m_{-0.010};
+    double wrist_to_grasp_forward_offset_m_{0.1151};
+    double wrist_to_grasp_local_z_m_{-0.030};
 
     AutoPhase auto_phase_{AutoPhase::IDLE};
     std::deque<TargetSample> target_lock_buffer_;
     TargetPoint locked_object_point_{};
+    TargetVector locked_approach_axis_{};
     TargetPoint pre_grasp_point_{};
     TargetPoint commanded_goal_point_{};
     TargetPoint frozen_pre_grasp_point_{};
@@ -1515,8 +2235,7 @@ private:
     bool has_frozen_pre_grasp_joints_{false};
     bool has_tof_approach_point_{false};
     bool has_frozen_approach_axis_{false};
-    double frozen_approach_axis_x_{0.0};
-    double frozen_approach_axis_y_{0.0};
+    TargetVector frozen_approach_axis_{};
     double locked_object_yaw_{0.0};
     double hold_start_time_sec_{-1.0};
     double phase_start_time_sec_{-1.0};
@@ -1526,13 +2245,28 @@ private:
     double latest_tof_range_m_{std::numeric_limits<double>::quiet_NaN()};
     double last_tof_time_sec_{-1.0};
     double tof_forward_distance_m_{0.0};
-    double last_valid_vx_{0.0};
-    double last_valid_vy_{-1.0};
+    double last_tof_approach_range_m_{std::numeric_limits<double>::quiet_NaN()};
+    double last_tof_forward_progress_m_{std::numeric_limits<double>::quiet_NaN()};
+    bool tof_approach_faulted_{false};
+    bool tof_approach_blocked_{false};
+    bool tof_approach_reverse_retry_used_{false};
+    double tof_approach_axis_sign_{1.0};
+    std::vector<double> last_safe_tof_joint_positions_;
+    bool tof_pending_probe_{false};
+    int tof_active_probe_index_{-1};
+    int tof_preferred_probe_index_{0};
+    uint32_t tof_probe_failed_mask_{0};
+    int tof_probe_failed_count_{0};
+    double tof_probe_start_range_m_{std::numeric_limits<double>::quiet_NaN()};
+    double tof_probe_start_progress_m_{std::numeric_limits<double>::quiet_NaN()};
+    double tof_probe_start_time_sec_{-1.0};
+    TargetVector last_valid_approach_axis_{};
 
     std::vector<std::string> joint_name_;
     std::vector<double> goal_;
     std::vector<double> home_goal_;
     std::vector<double> q_meas_{std::vector<double>(6, 0.0)};
+    std::string last_limit_rejection_;
     bool has_joint_state_{false};
 
     rclcpp::Publisher<trajectory_msgs::msg::JointTrajectory>::SharedPtr pub_arm_traj_;
