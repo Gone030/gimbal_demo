@@ -36,8 +36,8 @@ public:
             "/target", 10,
             [this](const gimbal_mani::msg::TargetBearingRange &msg)
             {
-                vision_yaw_cmd_ = msg.yaw;
-                vision_pitch_cmd_ = msg.pitch;
+                vision_yaw_delta_ = msg.yaw;
+                vision_pitch_delta_ = msg.pitch;
                 has_new_vision_cmd_ = true;
             });
 
@@ -67,8 +67,8 @@ private:
         {
             if (has_new_vision_cmd_)
             {
-                commanded_yaw_ = vision_yaw_cmd_;
-                commanded_pitch_ = vision_pitch_cmd_;
+                commanded_yaw_ += vision_yaw_delta_;
+                commanded_pitch_ += vision_pitch_delta_;
                 has_new_vision_cmd_ = false;
             }
         }
@@ -93,8 +93,8 @@ private:
     }
 
     std::string tracker_cmd_ = "NONE";
-    double vision_yaw_cmd_ = 0.0;
-    double vision_pitch_cmd_ = 0.0;
+    double vision_yaw_delta_ = 0.0;
+    double vision_pitch_delta_ = 0.0;
     bool has_new_vision_cmd_ = false;
 
     double manual_yaw_ = 0.0;
