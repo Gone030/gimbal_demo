@@ -43,7 +43,7 @@
         </model>
 
         <model name="support_platform">
-            <pose>0.57 0 0.06 0 0 0</pose>
+            <pose>0.50 0 0.06 0 0 0</pose>
             <static>true</static>
             <link name="link">
                 <collision name="collision">
@@ -68,20 +68,20 @@
         </model>
 
         <model name="red_box">
-            <pose>0.45 0.00 0.145 0 0 0</pose>
+            <pose>0.37 0.00 0.145 0 0 0</pose>
             <static>false</static>
             <link name="link">
                 <collision name="collision">
                     <geometry>
                         <box>
-                            <size>0.05 0.05 0.05</size>
+                            <size>0.025 0.025 0.025</size>
                         </box>
                     </geometry>
                 </collision>
                 <visual name="visual">
                     <geometry>
                         <box>
-                            <size>0.05 0.05 0.05</size>
+                            <size>0.025 0.025 0.025</size>
                         </box>
                     </geometry>
                     <material>
@@ -94,13 +94,13 @@
         </model>
 
         <model name="blue_cylinder">
-            <pose>0.45 -0.12 0.145 0 0 0</pose>
+            <pose>0.37 -0.12 0.145 0 0 0</pose>
             <static>false</static>
             <link name="link">
                 <collision name="collision">
                     <geometry>
                         <cylinder>
-                            <radius>0.025</radius>
+                            <radius>0.0125</radius>
                             <length>0.05</length>
                         </cylinder>
                     </geometry>
@@ -108,7 +108,7 @@
                 <visual name="visual">
                     <geometry>
                         <cylinder>
-                            <radius>0.025</radius>
+                            <radius>0.0125</radius>
                             <length>0.05</length>
                         </cylinder>
                     </geometry>
@@ -121,20 +121,20 @@
             </link>
         </model>
         <model name="green_sphere">
-            <pose>0.45 0.12 0.145 0 0 0</pose>
+            <pose>0.37 0.12 0.145 0 0 0</pose>
             <static>false</static>
             <link name="link">
                 <collision name="collision">
                     <geometry>
                         <sphere>
-                            <radius>0.025</radius>
+                            <radius>0.0125</radius>
                         </sphere>
                     </geometry>
                 </collision>
                 <visual name="visual">
                     <geometry>
                         <sphere>
-                            <radius>0.025</radius>
+                            <radius>0.0125</radius>
                         </sphere>
                     </geometry>
                     <material>
