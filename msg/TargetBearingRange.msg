@@ -2,7 +2,7 @@
 # - 기준 프레임 축: +X 전방, +Y 좌측, +Z 상방 (right-handed)
 # - 단위: yaw/pitch/object_yaw [rad], range [m]
 # - yaw  : +Z 축 기준 회전 (위에서 내려다볼 때 CCW가 +)
-# - pitch: +Y 축 기준 회전 (전방(+X)에서 상방(+Z)으로 올라가면 +)
+# - pitch: +Y 축 기준 회전 (시스템 convention상 하방이 +, arm 변환에서는 pitch_up=-pitch로 사용)
 # - object_yaw: 이미지 평면 내 물체 방향각(카메라 광축 기준 회전으로 취급, [rad])
 
 std_msgs/Header header
