@@ -2,7 +2,7 @@
 <robot name="servo_gimbal_2axis"
     xmlns:xacro="http://www.ros.org/wiki/xacro">
 
-    <xacro:arg name="mesh_prefix" default=""/>
+    <xacro:arg name="mesh_prefix" default="package://gimbal_mani"/>
 
 
     <!-- ===== params ===== -->
@@ -34,7 +34,7 @@
         <visual>
             <origin xyz="-0.5 0.0 0.0225" rpy="0.0 0.0 0.0"/>
             <geometry>
-                <mesh filename="${mesh_prefix}/models/gimbal/meshes/gimbal_base.STL" scale="${stl_scale}"/>
+                <mesh filename="${mesh_prefix}/models/gimbal/meshes/gimbal_base.stl" scale="${stl_scale}"/>
             </geometry>
         </visual>
     </link>
@@ -74,7 +74,7 @@
         <visual>
             <origin xyz="-0.4965 -0.0188 0.05" rpy="0 0 0"/>
             <geometry>
-                <mesh filename="${mesh_prefix}/models/gimbal/meshes/gimbal_arms.STL" scale="${stl_scale}"/>
+                <mesh filename="${mesh_prefix}/models/gimbal/meshes/gimbal_arms.stl" scale="${stl_scale}"/>
             </geometry>
         </visual>
     </link>
@@ -114,7 +114,7 @@
         <visual>
             <origin xyz="-0.539 -0.018 -0.0335" rpy="0 0 0"/>
             <geometry>
-                <mesh filename="${mesh_prefix}/models/gimbal/meshes/gimbal_tilt.STL" scale="${stl_scale}"/>
+                <mesh filename="${mesh_prefix}/models/gimbal/meshes/gimbal_tilt.stl" scale="${stl_scale}"/>
             </geometry>
         </visual>
     </link>
@@ -131,12 +131,29 @@
     <!-- ===== camera stage ===== -->
     <link name="gimbal_camera_link">
         <xacro:default_inertial mass="0.02"/>
+        <inertial>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <mass value="0.01"/>
+            <inertia ixx="1e-6" ixy="0" ixz="0"
+                     iyy="1e-6" iyz="0"
+                     izz="1e-6"/>
+        </inertial>
+
+        <visual>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <box size="0.01 0.02 0.02"/>
+            </geometry>
+            <material name="camera_visual">
+                <color rgba="0.6 0.3 0.1 1.0"/>
+            </material>
+        </visual>
     </link>
 
     <joint name="gimbal_camera_joint" type="fixed">
         <parent link="gimbal_pitch_link"/>
         <child link="gimbal_camera_link"/>
-        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <origin xyz="0.01 0 0.01" rpy="0 0 0"/>
     </joint>
 
     <link name="tof_link">
@@ -151,7 +168,7 @@
         <visual>
             <origin xyz="0 0 0" rpy="0 0 0"/>
             <geometry>
-                <box size="0.02 0.02 0.01"/>
+                <box size="0.01 0.01 0.01"/>
             </geometry>
             <material name="tof_visual">
                 <color rgba="0.1 0.8 0.1 1.0"/>
@@ -162,7 +179,7 @@
     <joint name="tof_joint" type="fixed">
         <parent link="gimbal_camera_link"/>
         <child link="tof_link"/>
-        <origin xyz="0.025 0.0 -0.023" rpy="0 0 0"/>
+        <origin xyz="0 0.01 0" rpy="0 0 0"/>
     </joint>
 
 </robot>
