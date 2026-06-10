@@ -1,10 +1,13 @@
 #include <rclcpp/rclcpp.hpp>
 
+#include <vector>
+
 #include <cv_bridge/cv_bridge.h>
 #include <sensor_msgs/image_encodings.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <sensor_msgs/msg/laser_scan.hpp>
 #include <builtin_interfaces/msg/time.hpp>
+#include <rcl_interfaces/msg/set_parameters_result.hpp>
 
 #include <opencv2/opencv.hpp>
 #include "gimbal_mani/msg/target_bearing_range.hpp"
@@ -27,6 +30,29 @@ public:
         // capture fps / timer period
         fps_ = declare_parameter<double>("fps", 30.0);
         target_frame_id_ = declare_parameter<std::string>("target_frame_id", "tof_link");
+        target_center_offset_x_px_ = declare_parameter<int>("target_center_offset_x_px", -30);
+        target_center_offset_y_px_ = declare_parameter<int>("target_center_offset_y_px", 0);
+        param_cb_handle_ = add_on_set_parameters_callback(
+            [this](const std::vector<rclcpp::Parameter> &params)
+            {
+                rcl_interfaces::msg::SetParametersResult result;
+                result.successful = true;
+                result.reason = "ok";
+
+                for (const auto &param : params)
+                {
+                    if (param.get_name() == "target_center_offset_x_px")
+                    {
+                        target_center_offset_x_px_ = static_cast<int>(param.as_int());
+                    }
+                    else if (param.get_name() == "target_center_offset_y_px")
+                    {
+                        target_center_offset_y_px_ = static_cast<int>(param.as_int());
+                    }
+                }
+
+                return result;
+            });
 
         // ---- pub
         tbr_pub_ = create_publisher<gimbal_mani::msg::TargetBearingRange>(
@@ -102,8 +128,10 @@ private:
             mask = mask1 | mask2;
         }
 
-        const int center_x = static_cast<int>(msg.width) / 2;
-        const int center_y = static_cast<int>(msg.height) / 2;
+        const int center_x =
+            static_cast<int>(msg.width) / 2 + target_center_offset_x_px_;
+        const int center_y =
+            static_cast<int>(msg.height) / 2 + target_center_offset_y_px_;
 
         cv::Moments m = cv::moments(mask);
         if (m.m00 <= 1000)
@@ -115,7 +143,7 @@ private:
         int error_x = center_x - cx;
         int error_y = center_y - cy;
 
-        const int deadzone = 20;
+        const int deadzone = 15;
         if (std::abs(error_x) < deadzone)
             error_x = 0;
         if (std::abs(error_y) < deadzone)
@@ -204,6 +232,8 @@ private:
     std::string device_;
     std::string target_frame_id_;
     double fps_ = 30.0;
+    int target_center_offset_x_px_ = 0;
+    int target_center_offset_y_px_ = 0;
 
     std::string target_color_ = "NONE";
     double tof_range_m_ = std::numeric_limits<double>::quiet_NaN();
@@ -217,6 +247,7 @@ private:
     rclcpp::TimerBase::SharedPtr timer_;
     rclcpp::Subscription<std_msgs::msg::String>::SharedPtr command_sub_;
     rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr tof_sub_;
+    rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr param_cb_handle_;
 
     // real capture
     cv::VideoCapture cap_;
