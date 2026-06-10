@@ -4,7 +4,8 @@
      For more information, please see http://wiki.ros.org/sw_urdf_exporter -->
 <robot
   name="so_100_arm" xmlns:xacro="http://www.ros.org/wiki/xacro">
-  <xacro:arg name="mesh_prefix" default=""/>
+  <xacro:arg name="mesh_prefix" default="package://gimbal_mani"/>
+
 
 
 <!--
@@ -322,6 +323,12 @@
           filename="${mesh_prefix}/models/so_100_arm_5dof/meshes/Fixed_Gripper.STL" />
       </geometry>
     </collision>
+    <collision name="fixed_gripper_contact_pad">
+      <origin xyz="0.0133 -0.0625 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.001 0.035 0.025"/>
+      </geometry>
+    </collision>
 	  </link>
 	  <link name="gripper_grasp_frame"/>
 	  <joint name="fixed_gripper_to_grasp_frame" type="fixed">
@@ -335,7 +342,7 @@
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
         <mesh
-          filename="${mesh_prefix}/models/gimbal/meshes/gimbal_mount.STL"
+          filename="${mesh_prefix}/models/gimbal/meshes/gimbal_mount.stl"
           scale="0.001 0.001 0.001"/>
       </geometry>
       <material name="mount_color">
@@ -401,6 +408,12 @@
           filename="${mesh_prefix}/models/so_100_arm_5dof/meshes/Moving_Jaw.STL" />
       </geometry>
     </collision>
+    <collision name="moving_jaw_contact_pad">
+      <origin xyz="-0.0083 -0.0381 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.001 0.035 0.025"/>
+      </geometry>
+    </collision>
   </link>
   <joint
     name="Gripper"
@@ -416,4 +429,20 @@
       xyz="0 0 1" />
     <limit lower="0.0" upper="1.5" effort="10" velocity="2.0"/>
   </joint>
+  <gazebo reference="Fixed_Gripper">
+    <mu1>1.5</mu1>
+    <mu2>1.5</mu2>
+    <kp>100000.0</kp>
+    <kd>10.0</kd>
+    <maxVel>0.001</maxVel>
+    <minDepth>0.0001</minDepth>
+  </gazebo>
+  <gazebo reference="Moving_Jaw">
+    <mu1>1.5</mu1>
+    <mu2>1.5</mu2>
+    <kp>100000.0</kp>
+    <kd>10.0</kd>
+    <maxVel>0.001</maxVel>
+    <minDepth>0.0001</minDepth>
+  </gazebo>
 </robot>
