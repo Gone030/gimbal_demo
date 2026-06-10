@@ -8,6 +8,7 @@
 #include <sstream>
 #include <iomanip>
 #include <cstdint>
+#include <array>
 
 #include <rclcpp/rclcpp.hpp>
 #include <geometry_msgs/msg/point.hpp>
@@ -62,6 +63,28 @@ public:
             this->declare_parameter<double>("gripper_close_pos", gripper_close_pos_);
         gripper_action_time_sec_ =
             this->declare_parameter<double>("gripper_action_time_sec", gripper_action_time_sec_);
+        lift_distance_m_ =
+            this->declare_parameter<double>("lift_distance_m", lift_distance_m_);
+        lift_command_time_sec_ =
+            this->declare_parameter<double>("lift_command_time_sec", lift_command_time_sec_);
+        lift_cartesian_tol_m_ =
+            this->declare_parameter<double>("lift_cartesian_tol_m", lift_cartesian_tol_m_);
+        numerical_ik_max_iterations_ =
+            this->declare_parameter<int>("numerical_ik_max_iterations", numerical_ik_max_iterations_);
+        numerical_ik_position_tol_m_ =
+            this->declare_parameter<double>("numerical_ik_position_tol_m", numerical_ik_position_tol_m_);
+        numerical_ik_axis_tol_rad_ =
+            this->declare_parameter<double>("numerical_ik_axis_tol_rad", numerical_ik_axis_tol_rad_);
+        numerical_ik_accept_position_m_ =
+            this->declare_parameter<double>("numerical_ik_accept_position_m", numerical_ik_accept_position_m_);
+        numerical_ik_accept_axis_rad_ =
+            this->declare_parameter<double>("numerical_ik_accept_axis_rad", numerical_ik_accept_axis_rad_);
+        numerical_ik_max_step_rad_ =
+            this->declare_parameter<double>("numerical_ik_max_step_rad", numerical_ik_max_step_rad_);
+        numerical_ik_damping_ =
+            this->declare_parameter<double>("numerical_ik_damping", numerical_ik_damping_);
+        numerical_ik_axis_weight_m_ =
+            this->declare_parameter<double>("numerical_ik_axis_weight_m", numerical_ik_axis_weight_m_);
         tof_joint_probe_step_rad_ =
             this->declare_parameter<double>("tof_joint_probe_step_rad", tof_joint_probe_step_rad_);
         tof_joint_probe_shoulder_ratio_ =
@@ -112,6 +135,10 @@ public:
             "/arm/grasp_start", 10,
             std::bind(&Arm_UpperLayerMain::on_grasp_start, this, std::placeholders::_1));
 
+        sub_go_up_ = this->create_subscription<std_msgs::msg::Empty>(
+            "/arm/go_up", 10,
+            std::bind(&Arm_UpperLayerMain::on_go_up, this, std::placeholders::_1));
+
         sub_joint_state_ = this->create_subscription<sensor_msgs::msg::JointState>(
             "/joint_states", rclcpp::SensorDataQoS(),
             std::bind(&Arm_UpperLayerMain::on_joint_state, this, std::placeholders::_1));
@@ -142,6 +169,7 @@ private:
         GRIPPER_OPEN,
         TOF_APPROACH,
         GRIPPER_CLOSE,
+        LIFT,
         GRASP_HOLD,
     };
 
@@ -336,6 +364,34 @@ private:
             break;
         }
 
+        case AutoPhase::LIFT:
+        {
+            if (!has_lift_goal_point_ ||
+                !solve_goal_from_point(lift_goal_point_, locked_object_yaw_))
+            {
+                target_valid_ = hold_last_safe_tof_joint_goal();
+                RCLCPP_WARN_THROTTLE(
+                    this->get_logger(), *this->get_clock(), 1000,
+                    "Lift IK unavailable; holding the closed-gripper grasp pose.");
+                break;
+            }
+
+            goal_[5] = gripper_close_pos_;
+            command_time_from_start_sec_ = lift_command_time_sec_;
+
+            if (arm_goal_reached(joint_reach_tol_rad_) &&
+                cartesian_goal_reached(lift_cartesian_tol_m_))
+            {
+                last_safe_tof_joint_positions_ = goal_;
+                last_safe_tof_joint_positions_[5] = gripper_close_pos_;
+                auto_phase_ = AutoPhase::GRASP_HOLD;
+                RCLCPP_INFO(
+                    this->get_logger(),
+                    "LIFT reached: dz=%.3f m.", lift_distance_m_);
+            }
+            break;
+        }
+
         case AutoPhase::GRASP_HOLD:
         {
             if (!hold_last_safe_tof_joint_goal())
@@ -346,6 +402,27 @@ private:
 
             goal_[5] = gripper_close_pos_;
             command_time_from_start_sec_ = 1.0;
+
+            if (go_up_requested_)
+            {
+                geometry_msgs::msg::Point current;
+                if (!lookup_current_arm_point(current))
+                {
+                    RCLCPP_WARN_THROTTLE(
+                        this->get_logger(), *this->get_clock(), 1000,
+                        "Waiting for gripper TF before starting lift.");
+                    break;
+                }
+
+                go_up_requested_ = false;
+                lift_goal_point_ = {
+                    current.x,
+                    current.y,
+                    current.z + std::max(0.0, lift_distance_m_)};
+                has_lift_goal_point_ = true;
+                auto_phase_ = AutoPhase::LIFT;
+                phase_start_time_sec_ = this->now().seconds();
+            }
             break;
         }
         }
@@ -439,6 +516,14 @@ private:
             has_frozen_pre_grasp_point_)
         {
             grasp_start_requested_ = true;
+        }
+    }
+
+    void on_go_up(const std_msgs::msg::Empty &)
+    {
+        if (auto_enabled_ && auto_phase_ == AutoPhase::GRASP_HOLD)
+        {
+            go_up_requested_ = true;
         }
     }
 
@@ -670,7 +755,7 @@ private:
     }
 
     template <typename Candidate>
-    void log_ik_candidates(const Candidate &up, const Candidate &dn,
+    void log_ik_candidates(const std::vector<Candidate> &candidates,
                            const std::string &selected)
     {
         auto finite_cost = [](double value)
@@ -678,36 +763,49 @@ private:
             return std::isfinite(value) ? value : -1.0;
         };
 
+        std::ostringstream ss;
+        ss << "IK candidates phase=" << phase_name()
+           << " selected=" << selected;
+        for (const auto &candidate : candidates)
+        {
+            ss << " | " << candidate.name
+               << ": avail=" << (candidate.available ? 1 : 0)
+               << " valid=" << (candidate.valid ? 1 : 0)
+               << std::fixed << std::setprecision(1)
+               << " rot=" << display_joint_value(0, candidate.rotation)
+               << " sh=" << display_joint_value(1, candidate.shoulder)
+               << " el=" << display_joint_value(2, candidate.elbow)
+               << " wrist=" << display_joint_value(3, candidate.wrist)
+               << std::setprecision(3)
+               << " pos=" << candidate.position_error
+               << std::setprecision(1)
+               << " axis=" << candidate.axis_error * 180.0 / M_PI
+               << " yaw=" << candidate.yaw_error * 180.0 / M_PI
+               << " pitch=" << candidate.pitch_error * 180.0 / M_PI
+               << " it=" << candidate.iterations
+               << " reject=" << candidate.rejection
+               << std::setprecision(3)
+               << " cost=" << finite_cost(candidate.cost);
+        }
+
         RCLCPP_INFO_THROTTLE(
-            this->get_logger(), *this->get_clock(), 500,
-            "IK candidates phase=%s selected=%s | "
-            "up: avail=%d valid=%d sh=%.1f el=%.1f wrist=%.1f cost=%.3f | "
-            "dn: avail=%d valid=%d sh=%.1f el=%.1f wrist=%.1f cost=%.3f",
-            phase_name(), selected.c_str(),
-            up.available ? 1 : 0,
-            up.valid ? 1 : 0,
-            display_joint_value(1, up.shoulder),
-            display_joint_value(2, up.elbow),
-            display_joint_value(3, up.wrist),
-            finite_cost(up.cost),
-            dn.available ? 1 : 0,
-            dn.valid ? 1 : 0,
-            display_joint_value(1, dn.shoulder),
-            display_joint_value(2, dn.elbow),
-            display_joint_value(3, dn.wrist),
-            finite_cost(dn.cost));
+            this->get_logger(), *this->get_clock(), 500, "%s", ss.str().c_str());
     }
 
     void reset_auto_sequence()
     {
         target_lock_buffer_.clear();
+
         locked_object_point_ = {};
         locked_approach_axis_ = {};
+
         pre_grasp_point_ = {};
         commanded_goal_point_ = {};
         frozen_pre_grasp_point_ = {};
         tracked_pre_grasp_candidate_ = {};
         tof_approach_point_ = {};
+        lift_goal_point_ = {};
+
         has_locked_object_point_ = false;
         has_commanded_goal_point_ = false;
         has_frozen_pre_grasp_point_ = false;
@@ -715,8 +813,14 @@ private:
         has_frozen_pre_grasp_joints_ = false;
         has_frozen_approach_axis_ = false;
         has_tof_approach_point_ = false;
+        has_lift_goal_point_ = false;
+
         grasp_start_requested_ = false;
+
+        go_up_requested_ = false;
+
         locked_object_yaw_ = 0.0;
+
         tof_forward_distance_m_ = 0.0;
         last_tof_approach_range_m_ = std::numeric_limits<double>::quiet_NaN();
         last_tof_forward_progress_m_ = std::numeric_limits<double>::quiet_NaN();
@@ -733,6 +837,7 @@ private:
         tof_probe_start_range_m_ = std::numeric_limits<double>::quiet_NaN();
         tof_probe_start_progress_m_ = std::numeric_limits<double>::quiet_NaN();
         tof_probe_start_time_sec_ = -1.0;
+
         last_valid_approach_axis_ = {};
         last_limit_rejection_.clear();
         phase_start_time_sec_ = -1.0;
@@ -906,6 +1011,291 @@ private:
         return out;
     }
 
+    struct GraspFkResult
+    {
+        TargetPoint position;
+        TargetVector approach_axis;
+    };
+
+    static tf2::Transform joint_origin(double x, double y, double z,
+                                       double roll, double pitch, double yaw)
+    {
+        tf2::Quaternion q;
+        q.setRPY(roll, pitch, yaw);
+        return tf2::Transform(q, tf2::Vector3(x, y, z));
+    }
+
+    static tf2::Transform axis_rotation(const tf2::Vector3 &axis, double angle)
+    {
+        tf2::Quaternion q(axis, angle);
+        return tf2::Transform(q, tf2::Vector3(0.0, 0.0, 0.0));
+    }
+
+    GraspFkResult exact_grasp_fk(const std::vector<double> &joints) const
+    {
+        tf2::Transform tf;
+        tf.setIdentity();
+
+        tf *= joint_origin(0.0, -0.0452, 0.0165, 1.5708, 0.0, 0.0);
+        tf *= axis_rotation(tf2::Vector3(0.0, 1.0, 0.0), joints[0]);
+
+        tf *= joint_origin(0.0, 0.1025, 0.0306, 0.0, 0.0, 0.0);
+        tf *= axis_rotation(tf2::Vector3(1.0, 0.0, 0.0), joints[1]);
+
+        tf *= joint_origin(0.0, 0.11257, 0.028, 0.0, 0.0, 0.0);
+        tf *= axis_rotation(tf2::Vector3(1.0, 0.0, 0.0), joints[2]);
+
+        tf *= joint_origin(0.0, 0.0052, 0.1349, 0.0, 0.0, 0.0);
+        tf *= axis_rotation(tf2::Vector3(1.0, 0.0, 0.0), joints[3]);
+
+        tf *= joint_origin(0.0, -0.0601, 0.0, 0.0, 0.0, 0.0);
+        tf *= axis_rotation(tf2::Vector3(0.0, 1.0, 0.0), 0.0);
+        tf *= joint_origin(-0.010, -0.055, -0.030, 0.0, 0.0, 0.0);
+
+        const tf2::Vector3 position = tf.getOrigin();
+        const tf2::Vector3 approach = tf.getBasis() * tf2::Vector3(0.0, -1.0, 0.0);
+
+        GraspFkResult out;
+        out.position = {position.x(), position.y(), position.z()};
+        out.approach_axis = normalized_vector(
+            {approach.x(), approach.y(), approach.z()},
+            {0.0, -1.0, 0.0});
+        return out;
+    }
+
+    static bool solve_linear_4x4(
+        std::array<std::array<double, 4>, 4> a,
+        std::array<double, 4> b,
+        std::array<double, 4> &x)
+    {
+        for (size_t col = 0; col < 4; ++col)
+        {
+            size_t pivot = col;
+            for (size_t row = col + 1; row < 4; ++row)
+            {
+                if (std::fabs(a[row][col]) > std::fabs(a[pivot][col]))
+                {
+                    pivot = row;
+                }
+            }
+            if (std::fabs(a[pivot][col]) < 1e-10)
+            {
+                return false;
+            }
+            if (pivot != col)
+            {
+                std::swap(a[pivot], a[col]);
+                std::swap(b[pivot], b[col]);
+            }
+
+            const double divisor = a[col][col];
+            for (size_t k = col; k < 4; ++k)
+            {
+                a[col][k] /= divisor;
+            }
+            b[col] /= divisor;
+
+            for (size_t row = 0; row < 4; ++row)
+            {
+                if (row == col)
+                {
+                    continue;
+                }
+                const double factor = a[row][col];
+                for (size_t k = col; k < 4; ++k)
+                {
+                    a[row][k] -= factor * a[col][k];
+                }
+                b[row] -= factor * b[col];
+            }
+        }
+
+        x = b;
+        return true;
+    }
+
+    static double vector_angle(const TargetVector &a, const TargetVector &b)
+    {
+        const double dot = clamp(a.x * b.x + a.y * b.y + a.z * b.z, -1.0, 1.0);
+        return std::acos(dot);
+    }
+
+    static double vector_yaw(const TargetVector &v)
+    {
+        return std::atan2(v.x, -v.y);
+    }
+
+    static double vector_pitch(const TargetVector &v)
+    {
+        return std::atan2(v.z, std::hypot(v.x, v.y));
+    }
+
+    static double vector_yaw_error(const TargetVector &actual, const TargetVector &target)
+    {
+        return std::fabs(wrap_pi(vector_yaw(actual) - vector_yaw(target)));
+    }
+
+    static double vector_pitch_error(const TargetVector &actual, const TargetVector &target)
+    {
+        return std::fabs(vector_pitch(actual) - vector_pitch(target));
+    }
+
+    static void snap_seed_to_joint_limits(std::vector<double> &seed)
+    {
+        static constexpr std::array<double, 6> min_limits = {
+            -0.5 * M_PI, -0.5 * M_PI, -0.5 * M_PI, -M_PI, 0.0, 0.0};
+        static constexpr std::array<double, 6> max_limits = {
+            0.5 * M_PI, 0.5 * M_PI, 0.5 * M_PI, 0.0, 0.0, 1.5};
+        constexpr double measurement_tolerance_rad = 1e-4;
+
+        const size_t count = std::min(seed.size(), min_limits.size());
+        for (size_t i = 0; i < count; ++i)
+        {
+            if (seed[i] < min_limits[i] &&
+                min_limits[i] - seed[i] <= measurement_tolerance_rad)
+            {
+                seed[i] = min_limits[i];
+            }
+            else if (seed[i] > max_limits[i] &&
+                     seed[i] - max_limits[i] <= measurement_tolerance_rad)
+            {
+                seed[i] = max_limits[i];
+            }
+        }
+    }
+
+    bool refine_grasp_candidate(const TargetPoint &target_position,
+                                const TargetVector &target_axis,
+                                std::vector<double> &candidate,
+                                double &position_error,
+                                double &axis_error,
+                                double &yaw_error,
+                                double &pitch_error,
+                                int &iterations)
+    {
+        constexpr size_t error_dim = 6;
+        constexpr size_t joint_dim = 4;
+        const double axis_weight = numerical_ik_axis_weight_m_;
+
+        auto error_vector = [&](const std::vector<double> &q)
+        {
+            std::array<double, error_dim> e{};
+            const auto fk = exact_grasp_fk(q);
+            e[0] = target_position.x - fk.position.x;
+            e[1] = target_position.y - fk.position.y;
+            e[2] = target_position.z - fk.position.z;
+            e[3] = axis_weight * (target_axis.x - fk.approach_axis.x);
+            e[4] = axis_weight * (target_axis.y - fk.approach_axis.y);
+            e[5] = axis_weight * (target_axis.z - fk.approach_axis.z);
+            return e;
+        };
+
+        iterations = 0;
+        for (; iterations < numerical_ik_max_iterations_; ++iterations)
+        {
+            const auto fk = exact_grasp_fk(candidate);
+            position_error = point_distance(fk.position, target_position);
+            axis_error = vector_angle(fk.approach_axis, target_axis);
+            yaw_error = vector_yaw_error(fk.approach_axis, target_axis);
+            pitch_error = vector_pitch_error(fk.approach_axis, target_axis);
+            if (position_error <= numerical_ik_position_tol_m_ &&
+                axis_error <= numerical_ik_axis_tol_rad_)
+            {
+                return goal_within_joint_limits(candidate, false);
+            }
+
+            const auto error = error_vector(candidate);
+            std::array<std::array<double, joint_dim>, error_dim> jacobian{};
+            for (size_t joint = 0; joint < joint_dim; ++joint)
+            {
+                auto perturbed = candidate;
+                perturbed[joint] += numerical_ik_fd_step_rad_;
+                const auto perturbed_error = error_vector(perturbed);
+                for (size_t row = 0; row < error_dim; ++row)
+                {
+                    jacobian[row][joint] =
+                        -(perturbed_error[row] - error[row]) / numerical_ik_fd_step_rad_;
+                }
+            }
+
+            std::array<std::array<double, joint_dim>, joint_dim> normal{};
+            std::array<double, joint_dim> rhs{};
+            for (size_t row = 0; row < joint_dim; ++row)
+            {
+                for (size_t col = 0; col < joint_dim; ++col)
+                {
+                    for (size_t k = 0; k < error_dim; ++k)
+                    {
+                        normal[row][col] += jacobian[k][row] * jacobian[k][col];
+                    }
+                }
+                normal[row][row] += numerical_ik_damping_;
+                for (size_t k = 0; k < error_dim; ++k)
+                {
+                    rhs[row] += jacobian[k][row] * error[k];
+                }
+            }
+
+            std::array<double, joint_dim> delta{};
+            if (!solve_linear_4x4(normal, rhs, delta))
+            {
+                break;
+            }
+
+            bool accepted = false;
+            double current_score = 0.0;
+            for (const double value : error)
+            {
+                current_score += value * value;
+            }
+            for (double scale : {1.0, 0.5, 0.25, 0.125})
+            {
+                auto next = candidate;
+                for (size_t joint = 0; joint < joint_dim; ++joint)
+                {
+                    const double limited_delta = clamp(
+                        scale * delta[joint],
+                        -numerical_ik_max_step_rad_,
+                        numerical_ik_max_step_rad_);
+                    next[joint] = nearest_equivalent_angle(
+                        next[joint] + limited_delta, candidate[joint]);
+                }
+                next[4] = 0.0;
+                if (!goal_within_joint_limits(next, false))
+                {
+                    continue;
+                }
+
+                const auto next_error = error_vector(next);
+                double next_score = 0.0;
+                for (const double value : next_error)
+                {
+                    next_score += value * value;
+                }
+                if (next_score < current_score)
+                {
+                    candidate = next;
+                    accepted = true;
+                    break;
+                }
+            }
+
+            if (!accepted)
+            {
+                break;
+            }
+        }
+
+        const auto fk = exact_grasp_fk(candidate);
+        position_error = point_distance(fk.position, target_position);
+        axis_error = vector_angle(fk.approach_axis, target_axis);
+        yaw_error = vector_yaw_error(fk.approach_axis, target_axis);
+        pitch_error = vector_pitch_error(fk.approach_axis, target_axis);
+        return goal_within_joint_limits(candidate, false) &&
+               position_error <= numerical_ik_accept_position_m_ &&
+               axis_error <= numerical_ik_accept_axis_rad_;
+    }
+
     bool solve_goal_from_point(const TargetPoint &p, double wrist_roll_ref)
     {
         const TargetPoint wrist_target = grasp_to_wrist_target(p);
@@ -1032,6 +1422,13 @@ private:
         commanded_goal_point_ = p;
         has_commanded_goal_point_ = true;
 
+        TargetVector target_axis;
+        if (!approach_axis(target_axis))
+        {
+            target_valid_ = false;
+            return false;
+        }
+
         std::vector<double> best_goal;
         double best_cost = std::numeric_limits<double>::infinity();
         bool has_valid_candidate = false;
@@ -1039,48 +1436,72 @@ private:
 
         struct IkCandidateDebug
         {
+            std::string name{"unknown"};
             bool available{false};
             bool valid{false};
+            double rotation{0.0};
             double shoulder{0.0};
             double elbow{0.0};
             double wrist{0.0};
+            double position_error{std::numeric_limits<double>::quiet_NaN()};
+            double axis_error{std::numeric_limits<double>::quiet_NaN()};
+            double yaw_error{std::numeric_limits<double>::quiet_NaN()};
+            double pitch_error{std::numeric_limits<double>::quiet_NaN()};
+            int iterations{0};
+            std::string rejection{"none"};
             double cost{std::numeric_limits<double>::quiet_NaN()};
         };
 
-        IkCandidateDebug up_debug;
-        IkCandidateDebug dn_debug;
+        std::vector<IkCandidateDebug> candidate_debug;
 
-        auto try_candidate = [&](const char *name, bool ok, double shoulder_pitch, double elbow,
-                                 IkCandidateDebug &debug)
+        auto try_candidate = [&](const char *name, bool ok, std::vector<double> candidate)
         {
+            candidate_debug.emplace_back();
+            auto &debug = candidate_debug.back();
+            debug.name = name;
             if (!ok)
             {
                 return;
             }
 
             debug.available = true;
-
-            auto candidate = goal_;
-            candidate[0] = psi;
-            candidate[1] = shoulder_pitch;
-            candidate[2] = elbow;
-            const double wrist_pitch_raw =
-                -(candidate[1] + candidate[2]) + wrist_pitch_level_bias_;
-            candidate[3] = nearest_equivalent_angle(wrist_pitch_raw, q_meas_[3]);
-            (void)wrist_roll_ref;
             candidate[4] = 0.0;
-
+            debug.rotation = candidate[0];
             debug.shoulder = candidate[1];
             debug.elbow = candidate[2];
             debug.wrist = candidate[3];
 
             if (!goal_within_joint_limits(candidate, false))
             {
+                debug.rejection = last_limit_rejection_;
                 return;
             }
 
-            const double c = cost(shoulder_pitch, elbow);
+            if (!refine_grasp_candidate(
+                    p, target_axis, candidate,
+                    debug.position_error, debug.axis_error,
+                    debug.yaw_error, debug.pitch_error, debug.iterations))
+            {
+                debug.rotation = candidate[0];
+                debug.shoulder = candidate[1];
+                debug.elbow = candidate[2];
+                debug.wrist = candidate[3];
+                debug.rejection = last_limit_rejection_.empty()
+                                      ? "pose-tolerance"
+                                      : last_limit_rejection_;
+                return;
+            }
+
+            debug.rotation = candidate[0];
+            debug.shoulder = candidate[1];
+            debug.elbow = candidate[2];
+            debug.wrist = candidate[3];
+            const double c =
+                cost(candidate[1], candidate[2]) +
+                numerical_ik_position_cost_weight_ * debug.position_error +
+                numerical_ik_axis_cost_weight_ * debug.axis_error;
             debug.valid = true;
+            debug.rejection = "none";
             debug.cost = c;
             if (!has_valid_candidate || c < best_cost)
             {
@@ -1091,10 +1512,34 @@ private:
             }
         };
 
-        try_candidate("up", ok_up, shoulder_pitch_up, elbow_up, up_debug);
-        try_candidate("dn", ok_dn, shoulder_pitch_dn, elbow_dn, dn_debug);
+        auto seed_from_analytic = [&](double shoulder_pitch, double elbow)
+        {
+            auto seed = goal_;
+            seed[0] = psi;
+            seed[1] = shoulder_pitch;
+            seed[2] = elbow;
+            const double wrist_pitch_raw =
+                -(seed[1] + seed[2]) + wrist_pitch_level_bias_;
+            seed[3] = nearest_equivalent_angle(wrist_pitch_raw, q_meas_[3]);
+            (void)wrist_roll_ref;
+            seed[4] = 0.0;
+            return seed;
+        };
 
-        log_ik_candidates(up_debug, dn_debug, selected_candidate);
+        const auto up_seed = seed_from_analytic(shoulder_pitch_up, elbow_up);
+        try_candidate("up", ok_up, up_seed);
+        try_candidate(
+            "dn", ok_dn, seed_from_analytic(shoulder_pitch_dn, elbow_dn));
+
+        auto current_seed = q_meas_;
+        if (current_seed.size() == joint_name_.size())
+        {
+            snap_seed_to_joint_limits(current_seed);
+            current_seed[4] = 0.0;
+            try_candidate("current", true, current_seed);
+        }
+
+        log_ik_candidates(candidate_debug, selected_candidate);
 
         if (!has_valid_candidate)
         {
@@ -1853,6 +2298,8 @@ private:
             return "TOF_APPROACH";
         case AutoPhase::GRIPPER_CLOSE:
             return "GRIPPER_CLOSE";
+        case AutoPhase::LIFT:
+            return "LIFT";
         case AutoPhase::GRASP_HOLD:
             return "GRASP_HOLD";
         }
@@ -2106,6 +2553,50 @@ private:
             {
                 gripper_action_time_sec_ = p.as_double();
             }
+            else if (name == "lift_distance_m")
+            {
+                lift_distance_m_ = p.as_double();
+            }
+            else if (name == "lift_command_time_sec")
+            {
+                lift_command_time_sec_ = p.as_double();
+            }
+            else if (name == "lift_cartesian_tol_m")
+            {
+                lift_cartesian_tol_m_ = p.as_double();
+            }
+            else if (name == "numerical_ik_max_iterations")
+            {
+                numerical_ik_max_iterations_ = p.as_int();
+            }
+            else if (name == "numerical_ik_position_tol_m")
+            {
+                numerical_ik_position_tol_m_ = p.as_double();
+            }
+            else if (name == "numerical_ik_axis_tol_rad")
+            {
+                numerical_ik_axis_tol_rad_ = p.as_double();
+            }
+            else if (name == "numerical_ik_accept_position_m")
+            {
+                numerical_ik_accept_position_m_ = p.as_double();
+            }
+            else if (name == "numerical_ik_accept_axis_rad")
+            {
+                numerical_ik_accept_axis_rad_ = p.as_double();
+            }
+            else if (name == "numerical_ik_max_step_rad")
+            {
+                numerical_ik_max_step_rad_ = p.as_double();
+            }
+            else if (name == "numerical_ik_damping")
+            {
+                numerical_ik_damping_ = p.as_double();
+            }
+            else if (name == "numerical_ik_axis_weight_m")
+            {
+                numerical_ik_axis_weight_m_ = p.as_double();
+            }
             else if (name == "tof_joint_probe_step_rad")
             {
                 tof_joint_probe_step_rad_ = p.as_double();
@@ -2190,7 +2681,7 @@ private:
     double hold_target_exit_tol_m_{0.02};
     double target_lock_bearing_tol_rad_{0.03};
     double desired_grasp_range_m_{0.03};
-    double gripper_inside_range_m_{0.035};
+    double gripper_inside_range_m_{0.070};
     double gripper_inner_extra_approach_m_{0.02};
     double tof_approach_step_m_{0.01};
     double min_forward_approach_m_{0.0};
@@ -2199,7 +2690,21 @@ private:
     double gripper_open_pos_{0.8};
     double gripper_close_pos_{0.0};
     double gripper_action_time_sec_{0.8};
+    double lift_distance_m_{0.04};
+    double lift_command_time_sec_{1.5};
+    double lift_cartesian_tol_m_{0.015};
     double approach_reach_tol_rad_{0.25};
+    int numerical_ik_max_iterations_{30};
+    double numerical_ik_position_tol_m_{0.005};
+    double numerical_ik_axis_tol_rad_{0.05236};
+    double numerical_ik_accept_position_m_{0.015};
+    double numerical_ik_accept_axis_rad_{0.52360};
+    double numerical_ik_fd_step_rad_{0.001};
+    double numerical_ik_max_step_rad_{0.08727};
+    double numerical_ik_damping_{0.0001};
+    double numerical_ik_axis_weight_m_{0.10};
+    double numerical_ik_position_cost_weight_{10.0};
+    double numerical_ik_axis_cost_weight_{0.2};
     double tof_range_increase_tol_m_{0.005};
     double tof_progress_reverse_tol_m_{0.005};
     double tof_cartesian_error_stop_m_{0.06};
@@ -2227,6 +2732,7 @@ private:
     TargetPoint frozen_pre_grasp_point_{};
     TargetPoint tracked_pre_grasp_candidate_{};
     TargetPoint tof_approach_point_{};
+    TargetPoint lift_goal_point_{};
     std::vector<double> frozen_pre_grasp_joint_positions_;
     bool has_locked_object_point_{false};
     bool has_commanded_goal_point_{false};
@@ -2234,6 +2740,7 @@ private:
     bool has_tracked_pre_grasp_candidate_{false};
     bool has_frozen_pre_grasp_joints_{false};
     bool has_tof_approach_point_{false};
+    bool has_lift_goal_point_{false};
     bool has_frozen_approach_axis_{false};
     TargetVector frozen_approach_axis_{};
     double locked_object_yaw_{0.0};
@@ -2241,6 +2748,7 @@ private:
     double phase_start_time_sec_{-1.0};
     bool hold_reached_logged_{false};
     bool grasp_start_requested_{false};
+    bool go_up_requested_{false};
     bool has_tof_range_{false};
     double latest_tof_range_m_{std::numeric_limits<double>::quiet_NaN()};
     double last_tof_time_sec_{-1.0};
@@ -2276,6 +2784,7 @@ private:
     rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr sub_home_;
     rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr sub_auto_enable_;
     rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr sub_grasp_start_;
+    rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr sub_go_up_;
     rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr sub_joint_state_;
     rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr sub_tof_;
     rclcpp::TimerBase::SharedPtr timer_;
