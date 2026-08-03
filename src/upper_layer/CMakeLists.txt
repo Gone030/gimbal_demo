@@ -1,8 +1,35 @@
-add_executable(arm_upper_layer_main arm_upper_layer_main.cpp)
+add_library(arm_upper_core
+  arm_kinematics.cpp
+  target_projector.cpp
+  target_lock.cpp
+  grasp_planner.cpp
+  trajectory_builder.cpp
+  arm_debug.cpp
+  tof_approach.cpp
+  arm_auto_controller.cpp
+  arm_param_loader.cpp
+  arm_tf_lookup.cpp
+  arm_debug_snapshot_builder.cpp
+)
+
+add_executable(arm_upper_layer_main
+  arm_upper_layer_main.cpp
+  arm_upper_layer_node.cpp
+)
 add_executable(arm_joint_test_node arm_joint_test_node.cpp)
 add_executable(gimbal_upper_layer_main gimbal_upper_layer_main.cpp)
 add_executable(vision_node vision_node.cpp)
 add_executable(teleop_node gimbal_teleop_node.cpp)
+
+ament_target_dependencies(arm_upper_core
+  rclcpp
+  std_msgs
+  geometry_msgs
+  trajectory_msgs
+  tf2
+  tf2_ros
+  tf2_geometry_msgs
+)
 
 ament_target_dependencies(arm_upper_layer_main
   rclcpp
@@ -46,6 +73,11 @@ target_include_directories(arm_upper_layer_main
         ${CMAKE_CURRENT_SOURCE_DIR}/../../include
 )
 
+target_include_directories(arm_upper_core
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../include
+)
+
 target_include_directories(gimbal_upper_layer_main
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/../../include
@@ -57,9 +89,16 @@ target_link_libraries(vision_node
 )
 
 target_link_libraries(teleop_node ${cpp_typesupport_target})
-target_link_libraries(arm_upper_layer_main ${cpp_typesupport_target})
+target_link_libraries(arm_upper_core ${cpp_typesupport_target})
+target_link_libraries(arm_upper_layer_main arm_upper_core ${cpp_typesupport_target})
 target_link_libraries(arm_joint_test_node ${cpp_typesupport_target})
 target_link_libraries(gimbal_upper_layer_main ${cpp_typesupport_target})
+
+install(TARGETS arm_upper_core
+    ARCHIVE DESTINATION lib
+    LIBRARY DESTINATION lib
+    RUNTIME DESTINATION bin
+)
 
 install(TARGETS arm_upper_layer_main
     DESTINATION lib/${PROJECT_NAME}
